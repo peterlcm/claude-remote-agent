@@ -262,15 +262,14 @@
             <div class="modal-body" id="taskDetailContent">
                 加载中...
             </div>
-            <div class="task-progress-container" id="taskProgressContainer" style="display: none;">
-                <div class="progress-header">
-                    <span class="progress-status" id="progressStatus">思考中...</span>
-                    <span class="progress-turns" id="progressTurns">0 / 10</span>
+            <div class="event-stream-wrapper" id="taskEventStreamWrapper" style="display: none;">
+                <div class="event-stream-header">
+                    <span class="event-stream-title">
+                        <i class="fa fa-bolt"></i> 实时执行流
+                    </span>
+                    <span class="event-stream-meta" id="eventStreamMeta">等待事件...</span>
                 </div>
-                <div class="progress-bar">
-                    <div class="progress-fill" id="progressFill"></div>
-                </div>
-                <div class="progress-log" id="progressLog"></div>
+                <div class="event-stream" id="taskEventStream"></div>
             </div>
             <div class="modal-footer" id="taskDetailFooter">
                 <button class="btn btn-secondary" onclick="closeModal('taskDetailModal')">关闭</button>
@@ -447,6 +446,13 @@
             </div>
             <div class="modal-body">
                 <div class="confirmation-message" id="confirmationMessage"></div>
+                <div class="confirmation-tool" id="confirmationTool" style="display:none;">
+                    <div class="confirmation-tool-name">
+                        <i class="fa fa-wrench"></i>
+                        <span id="confirmationToolName"></span>
+                    </div>
+                    <pre class="confirmation-tool-input"><code id="confirmationToolInput"></code></pre>
+                </div>
                 <div class="confirmation-prompt" id="confirmationPrompt"></div>
                 <div class="confirmation-options" id="confirmationOptions"></div>
                 <div class="confirmation-timeout">

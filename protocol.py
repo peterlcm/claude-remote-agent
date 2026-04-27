@@ -4,33 +4,30 @@
 import json
 import time
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field
 
 
 class MessageType(str, Enum):
     """消息类型枚举"""
-    # 注册与认证
     AGENT_REGISTER = "agent.register"
     AGENT_REGISTER_ACK = "agent.register_ack"
 
-    # 心跳
     HEARTBEAT = "heartbeat"
     HEARTBEAT_ACK = "heartbeat.ack"
 
-    # 任务相关
     TASK_EXECUTE = "task.execute"
     TASK_STARTED = "task.started"
     TASK_PROGRESS = "task.progress"
+    TASK_EVENT = "task.event"
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
     TASK_CANCEL = "task.cancel"
     TASK_CANCELLED = "task.cancelled"
 
-    # 错误
     ERROR = "error"
 
-    # 用户确认
     USER_CONFIRMATION_REQUEST = "user_confirmation.request"
     USER_CONFIRMATION_RESPONSE = "user_confirmation.response"
 
@@ -48,8 +45,15 @@ class UserConfirmationRequest(BaseModel):
     title: str
     message: str
     prompt: str
-    options: list[ConfirmationOption] = []
+    options: List[ConfirmationOption] = []
     timeout: int = 300  # 超时时间（秒）
+
+    # 可选的结构化字段：当确认请求来自 Permission MCP 时附带工具元信息，
+    # 前端可据此渲染更易读的对话框（工具名、入参 JSON 等）。
+    source: Optional[str] = None
+    tool_name: Optional[str] = None
+    tool_input: Optional[Dict[str, Any]] = None
+    tool_use_id: Optional[str] = None
 
 
 class UserConfirmationResponse(BaseModel):
@@ -92,11 +96,20 @@ class TaskResult(BaseModel):
 
 
 class TaskProgress(BaseModel):
-    """任务进度"""
+    """任务进度（高层状态，已不再夹带文本流）"""
     turn: int = 0
     max_turns: int = 10
     status: str = "thinking"
     message: Optional[str] = None
+
+
+class TaskEvent(BaseModel):
+    """任务执行事件（细粒度流式）"""
+    task_id: str
+    seq: int
+    event_type: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: float = Field(default_factory=time.time)
 
 
 class Message(BaseModel):
@@ -107,12 +120,10 @@ class Message(BaseModel):
     timestamp: float = Field(default_factory=time.time)
 
     def to_json(self) -> str:
-        """转换为JSON字符串"""
         return self.model_dump_json(by_alias=True)
 
     @classmethod
     def from_json(cls, json_str: str) -> "Message":
-        """从JSON字符串解析"""
         data = json.loads(json_str)
         return cls(**data)
 
@@ -159,11 +170,28 @@ def build_task_started_message(task_id: str) -> Message:
 
 def build_task_progress_message(task_id: str,
                                 progress: TaskProgress) -> Message:
-    """构建任务进度消息"""
+    """构建任务进度消息（已收窄为高层状态）"""
     return Message(
         type=MessageType.TASK_PROGRESS,
         id=task_id,
         payload=progress.model_dump()
+    )
+
+
+def build_task_event_message(task_id: str, seq: int,
+                             event_type: str,
+                             payload: Dict[str, Any]) -> Message:
+    """构建任务事件消息（流式）"""
+    return Message(
+        type=MessageType.TASK_EVENT,
+        id=task_id,
+        payload={
+            "task_id": task_id,
+            "seq": seq,
+            "event_type": event_type,
+            "payload": payload,
+            "timestamp": time.time(),
+        }
     )
 
 

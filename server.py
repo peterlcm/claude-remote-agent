@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from models import (
     Base, engine, SessionLocal,
-    ProxyClient, Agent, Task, TaskLog,
+    ProxyClient, Agent, Task, TaskLog, TaskEvent,
     create_default_client, get_or_create_default_agent
 )
 from connection_manager import ConnectionManager
@@ -676,6 +676,49 @@ def get_task(task_id: str, db=Depends(get_db)):
                 }
                 for l in logs
             ]
+        }
+    }
+
+
+@app.get("/api/tasks/{task_id}/events")
+def list_task_events(task_id: str, since_seq: int = 0, limit: int = 2000,
+                      db=Depends(get_db)):
+    """获取指定任务的事件（升序，按 seq）。
+
+    用于前端首屏拉历史 + 断线重连时按 since_seq 拉补齐。
+    """
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if limit <= 0 or limit > 5000:
+        limit = 2000
+
+    query = (
+        db.query(TaskEvent)
+        .filter(TaskEvent.task_id == task_id)
+        .filter(TaskEvent.seq > since_seq)
+        .order_by(TaskEvent.seq.asc())
+        .limit(limit)
+    )
+    rows = query.all()
+    last_seq = rows[-1].seq if rows else since_seq
+    return {
+        "data": {
+            "task_id": task_id,
+            "since_seq": since_seq,
+            "last_seq": last_seq,
+            "count": len(rows),
+            "events": [
+                {
+                    "seq": e.seq,
+                    "event_type": e.event_type,
+                    "payload": e.get_payload(),
+                    "timestamp": e.event_ts,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                }
+                for e in rows
+            ],
         }
     }
 

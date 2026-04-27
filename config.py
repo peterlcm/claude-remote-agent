@@ -3,6 +3,8 @@
 """
 import os
 from pathlib import Path
+from typing import List
+
 from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -20,6 +22,19 @@ class ClaudeConfig(BaseSettings):
     max_turns: int = Field(default=10, validation_alias="CLAUDE_MAX_TURNS")
     effort: str = Field(default="", validation_alias="CLAUDE_EFFORT")
     timeout: int = Field(default=300, validation_alias="CLAUDE_TIMEOUT")
+
+    # 权限模式: default / acceptEdits / bypassPermissions / plan
+    permission_mode: str = Field(default="default", validation_alias="CLAUDE_PERMISSION_MODE")
+
+    # 自动放行的工具白名单（逗号分隔），命中后跳过 Permission MCP 弹窗
+    auto_approve_tools_raw: str = Field(
+        default="Read,Glob,Grep",
+        validation_alias="CLAUDE_AUTO_APPROVE_TOOLS",
+    )
+
+    @property
+    def auto_approve_tools(self) -> List[str]:
+        return [t.strip() for t in (self.auto_approve_tools_raw or "").split(",") if t.strip()]
 
 
 class AgentConfig(BaseSettings):

@@ -6,7 +6,10 @@ import uuid
 import json
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Float
+from sqlalchemy import (
+    create_engine, Column, String, Integer, Boolean, DateTime, Text,
+    ForeignKey, Float, Index, UniqueConstraint,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 
@@ -167,6 +170,35 @@ class TaskLog(Base):
     log_type = Column(String(32), nullable=False, comment="日志类型: info/warning/error")
     message = Column(Text, nullable=False, comment="日志内容")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TaskEvent(Base):
+    """任务流式事件（来自客户端 stream-json 协议的逐条事件）"""
+    __tablename__ = "task_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(64), nullable=False, comment="所属任务ID")
+    seq = Column(Integer, nullable=False, comment="客户端单调递增序号")
+    event_type = Column(String(64), nullable=False, comment="事件类型")
+    payload = Column(Text, nullable=False, comment="事件载荷(JSON)")
+    event_ts = Column(Float, nullable=True, comment="客户端时间戳")
+    created_at = Column(DateTime, default=datetime.utcnow, comment="服务端入库时间")
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "seq", name="uq_task_event_task_seq"),
+        Index("ix_task_event_task_seq", "task_id", "seq"),
+    )
+
+    def get_payload(self) -> dict:
+        if self.payload:
+            try:
+                return json.loads(self.payload)
+            except Exception:
+                pass
+        return {}
+
+    def set_payload(self, data: dict) -> None:
+        self.payload = json.dumps(data, ensure_ascii=False)
 
 
 def init_db():

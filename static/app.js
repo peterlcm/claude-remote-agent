@@ -5,9 +5,439 @@ let currentTaskProgress = {
     taskId: null,
     turn: 0,
     max_turns: 10,
-    status: 'idle',
-    output: ''  // 缓存完整输出内容
+    status: 'idle'
 };
+
+// ============ 实时事件流模块 ============
+const taskEventStream = {
+    taskId: null,
+    lastSeq: 0,
+    rendered: new Set(),
+    pendingFetch: false,
+    bufferedMissing: [],
+    streamEl: null,
+    metaEl: null,
+    wrapperEl: null,
+    blocks: {},          // 当前 assistant 消息的 content_block 索引 -> DOM
+    activeMessageEl: null, // 当前 streaming 中的 assistant 卡片
+    toolBlocks: {},      // tool_use_id -> tool 卡片节点
+    eventCount: 0,
+
+    bind() {
+        this.streamEl = document.getElementById('taskEventStream');
+        this.metaEl = document.getElementById('eventStreamMeta');
+        this.wrapperEl = document.getElementById('taskEventStreamWrapper');
+    },
+
+    reset(taskId) {
+        this.bind();
+        this.taskId = taskId;
+        this.lastSeq = 0;
+        this.rendered = new Set();
+        this.bufferedMissing = [];
+        this.pendingFetch = false;
+        this.blocks = {};
+        this.activeMessageEl = null;
+        this.toolBlocks = {};
+        this.eventCount = 0;
+        if (this.streamEl) {
+            this.streamEl.innerHTML = '';
+        }
+        if (this.metaEl) {
+            this.metaEl.textContent = '加载历史事件...';
+        }
+    },
+
+    show() {
+        if (this.wrapperEl) this.wrapperEl.style.display = 'block';
+    },
+
+    hide() {
+        if (this.wrapperEl) this.wrapperEl.style.display = 'none';
+    },
+
+    setMeta(text) {
+        if (this.metaEl) this.metaEl.textContent = text;
+    },
+
+    isActive(taskId) {
+        return this.taskId && this.taskId === taskId;
+    },
+
+    async open(taskId) {
+        this.reset(taskId);
+        this.show();
+        await this.fetchSince(0);
+        if (this.eventCount === 0) {
+            this.setMeta('暂无事件，等待客户端输出...');
+        }
+    },
+
+    close() {
+        this.taskId = null;
+        this.hide();
+    },
+
+    async fetchSince(sinceSeq) {
+        if (this.pendingFetch) return;
+        this.pendingFetch = true;
+        try {
+            const taskId = this.taskId;
+            const data = await apiGet(`/api/tasks/${taskId}/events?since_seq=${sinceSeq}&limit=2000`);
+            if (!this.isActive(taskId)) return;
+            if (data && data.data && Array.isArray(data.data.events)) {
+                for (const evt of data.data.events) {
+                    this.applyEvent(evt);
+                }
+            }
+        } catch (err) {
+            console.error('fetch events failed', err);
+        } finally {
+            this.pendingFetch = false;
+        }
+        if (this.bufferedMissing.length > 0) {
+            const queued = this.bufferedMissing.sort((a, b) => a.seq - b.seq);
+            this.bufferedMissing = [];
+            for (const evt of queued) {
+                this.applyEvent(evt);
+            }
+        }
+    },
+
+    handleWsEvent(msg) {
+        if (!this.isActive(msg.task_id)) return;
+        const seq = msg.seq;
+        if (seq <= this.lastSeq) return;
+        if (seq === this.lastSeq + 1) {
+            this.applyEvent({
+                seq,
+                event_type: msg.event_type,
+                payload: msg.payload,
+                timestamp: msg.timestamp,
+            });
+            return;
+        }
+        this.bufferedMissing.push({
+            seq,
+            event_type: msg.event_type,
+            payload: msg.payload,
+            timestamp: msg.timestamp,
+        });
+        this.fetchSince(this.lastSeq);
+    },
+
+    applyEvent(evt) {
+        if (this.rendered.has(evt.seq)) return;
+        this.rendered.add(evt.seq);
+        this.lastSeq = Math.max(this.lastSeq, evt.seq);
+        this.eventCount += 1;
+        this.setMeta(`事件数 ${this.eventCount} · 最新序号 ${this.lastSeq}`);
+        this.renderEvent(evt);
+        if (this.streamEl) {
+            this.streamEl.scrollTop = this.streamEl.scrollHeight;
+        }
+    },
+
+    renderEvent(evt) {
+        const type = evt.event_type;
+        const payload = evt.payload || {};
+        switch (type) {
+            case 'session_init':
+                this.renderSimple('session', '<i class="fa fa-sign-in"></i> 会话初始化',
+                    `model=${escapeHtml(payload.model || '')} · session=${escapeHtml(payload.session_id || '')} · permission=${escapeHtml(payload.permission_mode || '')}`,
+                    evt.timestamp);
+                break;
+            case 'message_start':
+                this.beginAssistantMessage(evt.timestamp);
+                break;
+            case 'content_block_start': {
+                const block = payload.content_block || {};
+                this.beginContentBlock(payload.index, block);
+                break;
+            }
+            case 'text_delta':
+                this.appendTextDelta(payload.index, payload.text || '');
+                break;
+            case 'tool_input_delta':
+                this.appendToolInputDelta(payload.index, payload.partial_json || '');
+                break;
+            case 'content_block_stop':
+                this.finalizeContentBlock(payload.index);
+                break;
+            case 'message_delta':
+                if (payload.delta && payload.delta.stop_reason) {
+                    this.markMessageFooter(payload.delta.stop_reason);
+                }
+                break;
+            case 'message_stop':
+                this.activeMessageEl = null;
+                this.blocks = {};
+                break;
+            case 'assistant_message': {
+                this.renderAssistantSummary(payload, evt.timestamp);
+                break;
+            }
+            case 'tool_result':
+                this.renderToolResult(payload, evt.timestamp);
+                break;
+            case 'api_retry':
+                this.renderApiRetry(payload, evt.timestamp);
+                break;
+            case 'rate_limit':
+                this.renderRateLimit(payload, evt.timestamp);
+                break;
+            case 'stderr':
+                this.renderStderr(payload, evt.timestamp);
+                break;
+            case 'result':
+                this.renderResult(payload, evt.timestamp);
+                break;
+            case 'system_init':
+                break;
+            default:
+                this.renderSimple('misc', `<i class="fa fa-circle-o"></i> ${escapeHtml(type)}`,
+                    `<pre class="evt-json">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`,
+                    evt.timestamp);
+        }
+    },
+
+    renderSimple(klass, header, body, ts) {
+        const card = document.createElement('div');
+        card.className = `evt-card ${klass}`;
+        card.innerHTML = `
+            <div class="evt-card-header">
+                <span class="evt-title">${header}</span>
+                <span class="evt-time">${formatTs(ts)}</span>
+            </div>
+            <div class="evt-card-body">${body}</div>
+        `;
+        this.streamEl.appendChild(card);
+    },
+
+    beginAssistantMessage(ts) {
+        const card = document.createElement('div');
+        card.className = 'evt-card assistant';
+        card.innerHTML = `
+            <div class="evt-card-header">
+                <span class="evt-title"><i class="fa fa-comment"></i> Assistant</span>
+                <span class="evt-time">${formatTs(ts)}</span>
+            </div>
+            <div class="evt-blocks"></div>
+            <div class="evt-card-footer" style="display:none"></div>
+        `;
+        this.streamEl.appendChild(card);
+        this.activeMessageEl = card;
+        this.blocks = {};
+    },
+
+    ensureActiveMessage() {
+        if (!this.activeMessageEl) {
+            this.beginAssistantMessage(Date.now() / 1000);
+        }
+        return this.activeMessageEl;
+    },
+
+    beginContentBlock(index, block) {
+        const parent = this.ensureActiveMessage();
+        const blocksWrap = parent.querySelector('.evt-blocks');
+        const node = document.createElement('div');
+        if (block && block.type === 'tool_use') {
+            node.className = 'evt-block evt-block-tool';
+            const toolName = block.name || 'tool';
+            const toolUseId = block.id || `tool-${index}`;
+            node.innerHTML = `
+                <div class="evt-block-header">
+                    <i class="fa fa-wrench"></i>
+                    <span class="evt-tool-name">${escapeHtml(toolName)}</span>
+                    <span class="evt-tool-id">${escapeHtml(toolUseId)}</span>
+                </div>
+                <pre class="evt-tool-input"><code></code></pre>
+            `;
+            this.toolBlocks[toolUseId] = node;
+            node.dataset.toolUseId = toolUseId;
+        } else if (block && block.type === 'thinking') {
+            node.className = 'evt-block evt-block-thinking';
+            node.innerHTML = `<div class="evt-block-header"><i class="fa fa-lightbulb-o"></i> Thinking</div><div class="evt-text"></div>`;
+        } else {
+            node.className = 'evt-block evt-block-text';
+            node.innerHTML = `<div class="evt-text"></div>`;
+        }
+        blocksWrap.appendChild(node);
+        this.blocks[index] = node;
+    },
+
+    appendTextDelta(index, text) {
+        let node = this.blocks[index];
+        if (!node) {
+            this.beginContentBlock(index, { type: 'text' });
+            node = this.blocks[index];
+        }
+        const target = node.querySelector('.evt-text');
+        if (!target) return;
+        target.appendChild(document.createTextNode(text));
+    },
+
+    appendToolInputDelta(index, partialJson) {
+        const node = this.blocks[index];
+        if (!node) return;
+        const target = node.querySelector('.evt-tool-input code');
+        if (!target) return;
+        target.appendChild(document.createTextNode(partialJson));
+    },
+
+    finalizeContentBlock(index) {
+        const node = this.blocks[index];
+        if (!node) return;
+        node.classList.add('evt-block-done');
+    },
+
+    markMessageFooter(stopReason) {
+        const card = this.activeMessageEl;
+        if (!card) return;
+        const footer = card.querySelector('.evt-card-footer');
+        if (footer) {
+            footer.style.display = '';
+            footer.textContent = `stop_reason=${stopReason}`;
+        }
+    },
+
+    renderAssistantSummary(payload, ts) {
+        if (this.activeMessageEl) return;
+        const content = Array.isArray(payload.content) ? payload.content : [];
+        if (content.length === 0) return;
+        const card = document.createElement('div');
+        card.className = 'evt-card assistant';
+        let blocksHtml = '';
+        for (const block of content) {
+            if (!block) continue;
+            if (block.type === 'text') {
+                blocksHtml += `<div class="evt-block evt-block-text"><div class="evt-text">${escapeHtml(block.text || '')}</div></div>`;
+            } else if (block.type === 'tool_use') {
+                blocksHtml += `
+                    <div class="evt-block evt-block-tool" data-tool-use-id="${escapeHtml(block.id || '')}">
+                        <div class="evt-block-header">
+                            <i class="fa fa-wrench"></i>
+                            <span class="evt-tool-name">${escapeHtml(block.name || 'tool')}</span>
+                            <span class="evt-tool-id">${escapeHtml(block.id || '')}</span>
+                        </div>
+                        <pre class="evt-tool-input"><code>${escapeHtml(JSON.stringify(block.input || {}, null, 2))}</code></pre>
+                    </div>`;
+            } else if (block.type === 'thinking') {
+                blocksHtml += `<div class="evt-block evt-block-thinking"><div class="evt-block-header"><i class="fa fa-lightbulb-o"></i> Thinking</div><div class="evt-text">${escapeHtml(block.thinking || '')}</div></div>`;
+            }
+        }
+        card.innerHTML = `
+            <div class="evt-card-header">
+                <span class="evt-title"><i class="fa fa-comment"></i> Assistant 消息（turn ${payload.turn || ''}）</span>
+                <span class="evt-time">${formatTs(ts)}</span>
+            </div>
+            <div class="evt-blocks">${blocksHtml}</div>
+        `;
+        this.streamEl.appendChild(card);
+        for (const block of content) {
+            if (block && block.type === 'tool_use' && block.id) {
+                const node = card.querySelector(`[data-tool-use-id="${cssEscape(block.id)}"]`);
+                if (node) this.toolBlocks[block.id] = node;
+            }
+        }
+    },
+
+    renderToolResult(payload, ts) {
+        const content = Array.isArray(payload.content) ? payload.content : [];
+        for (const block of content) {
+            if (!block || block.type !== 'tool_result') continue;
+            const toolUseId = block.tool_use_id;
+            const isError = !!block.is_error;
+            const text = formatToolResultContent(block.content);
+            const card = document.createElement('div');
+            card.className = `evt-card tool-result ${isError ? 'tool-error' : ''}`;
+            card.innerHTML = `
+                <div class="evt-card-header">
+                    <span class="evt-title"><i class="fa fa-${isError ? 'times-circle' : 'check-circle'}"></i> 工具结果${toolUseId ? ' · ' + escapeHtml(toolUseId) : ''}</span>
+                    <span class="evt-time">${formatTs(ts)}</span>
+                </div>
+                <pre class="evt-tool-result"><code>${escapeHtml(text)}</code></pre>
+            `;
+            this.streamEl.appendChild(card);
+        }
+    },
+
+    renderApiRetry(payload, ts) {
+        const card = document.createElement('div');
+        card.className = 'evt-card retry';
+        card.innerHTML = `
+            <div class="evt-card-header">
+                <span class="evt-title"><i class="fa fa-exclamation-triangle"></i> API 重试</span>
+                <span class="evt-time">${formatTs(ts)}</span>
+            </div>
+            <div class="evt-card-body">
+                attempt ${escapeHtml(String(payload.attempt ?? '?'))}/${escapeHtml(String(payload.max_retries ?? '?'))} · 状态码 ${escapeHtml(String(payload.error_status ?? ''))} · 等待 ${escapeHtml(String(payload.retry_delay_ms ?? '?'))}ms
+                ${payload.error ? `<div class="evt-mono">${escapeHtml(String(payload.error))}</div>` : ''}
+            </div>
+        `;
+        this.streamEl.appendChild(card);
+    },
+
+    renderRateLimit(payload, ts) {
+        const info = payload.rate_limit_info || {};
+        this.renderSimple('rate-limit',
+            '<i class="fa fa-tachometer"></i> Rate Limit',
+            `<pre class="evt-json">${escapeHtml(JSON.stringify(info, null, 2))}</pre>`,
+            ts);
+    },
+
+    renderStderr(payload, ts) {
+        this.renderSimple('stderr',
+            '<i class="fa fa-terminal"></i> stderr',
+            `<pre class="evt-mono">${escapeHtml(payload.text || '')}</pre>`,
+            ts);
+    },
+
+    renderResult(payload, ts) {
+        const ok = !payload.is_error;
+        const card = document.createElement('div');
+        card.className = `evt-card result ${ok ? 'ok' : 'fail'}`;
+        const usage = payload.usage ? `<pre class="evt-json">${escapeHtml(JSON.stringify(payload.usage, null, 2))}</pre>` : '';
+        card.innerHTML = `
+            <div class="evt-card-header">
+                <span class="evt-title"><i class="fa fa-flag-checkered"></i> 终态 · ${escapeHtml(payload.subtype || '')}</span>
+                <span class="evt-time">${formatTs(ts)}</span>
+            </div>
+            <div class="evt-card-body">
+                turns=${escapeHtml(String(payload.num_turns ?? ''))} · 耗时=${escapeHtml(String(payload.duration_ms ?? ''))}ms · cost=$${escapeHtml(String(payload.total_cost_usd ?? '0'))}
+            </div>
+            ${payload.result ? `<pre class="evt-result"><code>${escapeHtml(payload.result)}</code></pre>` : ''}
+            ${usage}
+        `;
+        this.streamEl.appendChild(card);
+    },
+};
+
+function formatTs(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString();
+}
+
+function formatToolResultContent(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content.map(item => {
+            if (!item) return '';
+            if (typeof item === 'string') return item;
+            if (item.type === 'text') return item.text || '';
+            return JSON.stringify(item);
+        }).join('\n');
+    }
+    if (content == null) return '';
+    try { return JSON.stringify(content, null, 2); } catch (e) { return String(content); }
+}
+
+function cssEscape(s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_\-]/g, '\\$&');
+}
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -41,24 +471,28 @@ function initTabs() {
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${window.location.host}/ws/frontend`);
-    
+
     ws.onopen = () => {
         document.getElementById('wsDot').className = 'status-dot online';
         document.getElementById('wsText').textContent = 'WebSocket 已连接';
         showToast('WebSocket 已连接', 'success');
+        if (taskEventStream.taskId) {
+            // 重连后用当前 lastSeq 拉补齐缺失事件
+            taskEventStream.fetchSince(taskEventStream.lastSeq);
+        }
     };
-    
+
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
         handleWebSocketMessage(message);
     };
-    
+
     ws.onclose = () => {
         document.getElementById('wsDot').className = 'status-dot offline';
         document.getElementById('wsText').textContent = 'WebSocket 断开';
         setTimeout(connectWebSocket, 3000);
     };
-    
+
     ws.onerror = (error) => {
         console.error('WebSocket error:', error);
     };
@@ -75,25 +509,26 @@ function handleWebSocketMessage(message) {
             break;
         case 'task_started':
             refreshStats();
+            loadTasks();
+            loadRecentTasks();
             break;
         case 'task_progress':
-            // 只更新实时进度，不需要全量刷新 API
             updateTaskProgressRealtime(message.task_id, message.progress);
+            break;
+        case 'task_event':
+            taskEventStream.handleWsEvent(message);
             break;
         case 'task_completed':
         case 'task_failed':
         case 'task_cancelled':
             refreshStats();
-            // 如果详情 modal 正在显示这个任务，重新加载
-            if (currentTaskProgress.taskId === message.task_id) {
-                hideProgressContainer();
-                showTaskDetail(message.task_id);
-            }
             loadTasks();
             loadRecentTasks();
+            if (currentTaskProgress.taskId === message.task_id) {
+                showTaskDetail(message.task_id, { keepStream: true });
+            }
             break;
         case 'user_confirmation_request':
-            // 显示用户确认对话框
             showUserConfirmation(message.client_id, message.request);
             break;
     }
@@ -827,16 +1262,11 @@ function getStatusText(status) {
     return statusMap[status] || status;
 }
 
-async function showTaskDetail(taskId) {
+async function showTaskDetail(taskId, opts = {}) {
+    const keepStream = !!opts.keepStream;
     const container = document.getElementById('taskDetailContent');
     container.innerHTML = '<div class="empty-state">加载中...</div>';
     document.getElementById('taskDetailModal').classList.add('active');
-
-    // 隐藏旧的进度容器（如果存在）
-    const oldProgressContainer = document.getElementById('taskProgressContainer');
-    if (oldProgressContainer) {
-        oldProgressContainer.style.display = 'none';
-    }
 
     const data = await apiGet(`/api/tasks/${taskId}`);
 
@@ -847,31 +1277,34 @@ async function showTaskDetail(taskId) {
 
     const task = data.data;
 
-    // 判断是否正在运行
-    const isRunning = (task.status === 'running' || task.status === 'queued' || task.status === 'pending');
+    currentTaskProgress.taskId = taskId;
+    currentTaskProgress.max_turns = currentTaskProgress.max_turns || 10;
 
-    // 实时输出区域（只在任务运行中显示）
-    let realtimeHtml = '';
+    // 实时进度状态条（轻量，仅显示 turn/状态）
+    const isRunning = (task.status === 'running' || task.status === 'queued' || task.status === 'pending');
+    let progressBadgeHtml = '';
     if (isRunning) {
-        currentTaskProgress.taskId = taskId;
         const displayTurn = Math.min(currentTaskProgress.turn, currentTaskProgress.max_turns);
         const percent = currentTaskProgress.max_turns > 0 ? (displayTurn / currentTaskProgress.max_turns) * 100 : 0;
-
-        realtimeHtml = `
+        progressBadgeHtml = `
             <div id="realtimeOutput" class="realtime-output">
                 <div class="realtime-header">
-                    <span class="realtime-status">${currentTaskProgress.status === 'working' ? '执行中' : '思考中'}</span>
+                    <span class="realtime-status">${describeRuntimeStatus(currentTaskProgress.status)}</span>
                     <span class="realtime-turns">${displayTurn} / ${currentTaskProgress.max_turns}</span>
                 </div>
                 <div class="realtime-progress-bar">
                     <div class="realtime-fill" style="width: ${percent}%"></div>
                 </div>
-                <pre class="realtime-log">${escapeHtml(currentTaskProgress.output || '等待输出...')}</pre>
             </div>
         `;
+    }
+
+    // 初始化或保留事件流
+    if (!keepStream || !taskEventStream.isActive(taskId)) {
+        taskEventStream.open(taskId);
     } else {
-        // 任务已结束，清除进度
-        hideProgressContainer();
+        taskEventStream.show();
+        taskEventStream.fetchSince(taskEventStream.lastSeq);
     }
 
     let logsHtml = '';
@@ -890,7 +1323,7 @@ async function showTaskDetail(taskId) {
     }
 
     container.innerHTML = `
-        ${realtimeHtml}
+        ${progressBadgeHtml}
 
         <div class="task-detail-info">
             <div class="task-detail-row">
@@ -1011,6 +1444,10 @@ async function createTask() {
 // Modal helpers
 function closeModal(modalId) {
     document.getElementById(modalId).classList.remove('active');
+    if (modalId === 'taskDetailModal') {
+        taskEventStream.close();
+        hideProgressContainer();
+    }
 }
 
 // Close modal on outside click
@@ -1040,67 +1477,43 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// ============ 实时任务进度 ============
+// ============ 实时任务进度（高层状态） ============
 function updateTaskProgressRealtime(taskId, progress) {
-    // 更新全局状态
     currentTaskProgress.taskId = taskId;
     currentTaskProgress.turn = progress.turn || 0;
-    currentTaskProgress.max_turns = progress.max_turns || 10;
+    currentTaskProgress.max_turns = progress.max_turns || currentTaskProgress.max_turns || 10;
     currentTaskProgress.status = progress.status || 'thinking';
-
-    // 缓存输出内容
-    if (progress.message !== undefined && progress.message !== null) {
-        currentTaskProgress.output = progress.message;
-    }
-
-    // 尝试更新任务详情 modal 中的实时输出
     updateRunningTaskDisplay();
-
-    // 刷新任务列表中的状态
-    loadTasks();
-    loadRecentTasks();
 }
 
 function updateRunningTaskDisplay() {
-    // 查找实时输出区域
-    let outputArea = document.getElementById('realtimeOutput');
-    if (!outputArea) {
-        return; // modal 没打开或不是运行中的任务
-    }
-
-    // 更新进度条
+    const outputArea = document.getElementById('realtimeOutput');
+    if (!outputArea) return;
     const displayTurn = Math.min(currentTaskProgress.turn, currentTaskProgress.max_turns);
     const percent = currentTaskProgress.max_turns > 0 ? (displayTurn / currentTaskProgress.max_turns) * 100 : 0;
-
     const statusEl = outputArea.querySelector('.realtime-status');
     const turnsEl = outputArea.querySelector('.realtime-turns');
     const fillEl = outputArea.querySelector('.realtime-fill');
-    const logEl = outputArea.querySelector('.realtime-log');
+    if (statusEl) statusEl.textContent = describeRuntimeStatus(currentTaskProgress.status);
+    if (turnsEl) turnsEl.textContent = displayTurn + ' / ' + currentTaskProgress.max_turns;
+    if (fillEl) fillEl.style.width = percent + '%';
+}
 
-    if (statusEl) {
-        const statusText = {
-            'idle': '空闲', 'thinking': '思考中', 'tool_use': '使用工具',
-            'waiting_confirmation': '等待确认', 'working': '执行中'
-        };
-        statusEl.textContent = statusText[currentTaskProgress.status] || currentTaskProgress.status;
-    }
-    if (turnsEl) {
-        turnsEl.textContent = displayTurn + ' / ' + currentTaskProgress.max_turns;
-    }
-    if (fillEl) {
-        fillEl.style.width = percent + '%';
-    }
-
-    // 更新输出日志
-    if (logEl && currentTaskProgress.output) {
-        logEl.textContent = currentTaskProgress.output;
-        logEl.scrollTop = logEl.scrollHeight;
-    }
+function describeRuntimeStatus(status) {
+    const map = {
+        'idle': '空闲',
+        'thinking': '思考中',
+        'tool_use': '使用工具',
+        'waiting_confirmation': '等待确认',
+        'working': '执行中',
+        'completed': '已完成',
+        'failed': '已失败'
+    };
+    return map[status] || status || '运行中';
 }
 
 function hideProgressContainer() {
     currentTaskProgress.taskId = null;
-    currentTaskProgress.output = '';
 }
 
 // ============ 用户确认 ============
@@ -1117,6 +1530,25 @@ function showUserConfirmation(clientId, request) {
     document.getElementById('confirmationMessage').textContent = request.message || '';
     document.getElementById('confirmationPrompt').textContent = request.prompt || '';
     document.getElementById('requestIdInfo').textContent = `请求 ID: ${request.request_id}`;
+
+    const toolWrap = document.getElementById('confirmationTool');
+    const toolNameEl = document.getElementById('confirmationToolName');
+    const toolInputEl = document.getElementById('confirmationToolInput');
+    if (request.source === 'permission_mcp' || request.tool_name) {
+        toolWrap.style.display = '';
+        toolNameEl.textContent = request.tool_name || '(未知工具)';
+        let inputText = '';
+        try {
+            inputText = JSON.stringify(request.tool_input || {}, null, 2);
+        } catch (e) {
+            inputText = String(request.tool_input || '');
+        }
+        toolInputEl.textContent = inputText;
+    } else {
+        toolWrap.style.display = 'none';
+        toolNameEl.textContent = '';
+        toolInputEl.textContent = '';
+    }
 
     // 生成选项按钮
     const optionsContainer = document.getElementById('confirmationOptions');

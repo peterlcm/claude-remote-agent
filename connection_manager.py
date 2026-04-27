@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, Set, Optional, Callable
 from fastapi import WebSocket
 
-from models import SessionLocal, ProxyClient, Task, Agent
+from models import SessionLocal, ProxyClient, Task, Agent, TaskEvent
 from protocol import (
     Message, TaskResult, TaskProgress,
     build_task_started_message, build_task_progress_message,
@@ -140,13 +140,46 @@ class ConnectionManager:
                             "client_id": client_id
                         })
 
-                # 任务进度
+                # 任务进度（高层状态）
                 elif message.type == "task.progress":
                     task_id = message.id
                     await self.broadcast_to_frontend({
                         "type": "task_progress",
                         "task_id": task_id,
                         "progress": message.payload
+                    })
+
+                # 任务事件（流式细粒度）
+                elif message.type == "task.event":
+                    task_id = message.id or message.payload.get("task_id")
+                    seq = int(message.payload.get("seq") or 0)
+                    event_type = message.payload.get("event_type") or "unknown"
+                    inner_payload = message.payload.get("payload") or {}
+                    event_ts = message.payload.get("timestamp")
+
+                    try:
+                        record = TaskEvent(
+                            task_id=task_id,
+                            seq=seq,
+                            event_type=event_type,
+                            event_ts=event_ts,
+                        )
+                        record.set_payload(inner_payload)
+                        db.add(record)
+                        db.commit()
+                    except Exception as exc:
+                        # 唯一约束冲突等情况下回滚后忽略，避免影响后续广播
+                        db.rollback()
+                        print(f"⚠️ 任务事件入库失败 task={task_id} seq={seq}: {exc}")
+
+                    await self.broadcast_to_frontend({
+                        "type": "task_event",
+                        "task_id": task_id,
+                        "client_id": client_id,
+                        "seq": seq,
+                        "event_type": event_type,
+                        "payload": inner_payload,
+                        "timestamp": event_ts,
                     })
 
                 # 任务完成
