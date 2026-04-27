@@ -103,6 +103,32 @@ async function apiPost(endpoint, data) {
     }
 }
 
+async function apiPut(endpoint, data) {
+    try {
+        const response = await fetch(endpoint, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('API error:', error);
+        return null;
+    }
+}
+
+async function apiDelete(endpoint) {
+    try {
+        const response = await fetch(endpoint, {
+            method: 'DELETE'
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('API error:', error);
+        return null;
+    }
+}
+
 // Refresh all data
 function refreshAll() {
     refreshStats();
@@ -215,11 +241,7 @@ async function updateClient() {
     }
 
     const description = document.getElementById('editClientDescription').value.trim();
-    const result = await fetch(`/api/clients/${currentEditingClientId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, description })
-    }).then(r => r.json()).catch(() => null);
+    const result = await apiPut(`/api/clients/${currentEditingClientId}`, { name, description });
 
     if (result && result.data) {
         showToast('更新成功', 'success');
@@ -259,9 +281,7 @@ async function confirmDelete() {
         url = `/api/tasks/${deleteInfo.id}`;
     }
 
-    const result = await fetch(url, {
-        method: 'DELETE'
-    }).then(r => r.json()).catch(() => null);
+    const result = await apiDelete(url);
 
     if (result && result.data && result.data.success) {
         showToast('删除成功', 'success');
@@ -417,13 +437,8 @@ async function loadAgents() {
 
 async function loadClientsIntoSelect(selectId, includeEmptyOption, emptyLabel) {
     const select = document.getElementById(selectId);
-    try {
-        const response = await fetch('/api/clients');
-        if (!response.ok) {
-            select.innerHTML = `<option value="">HTTP ${response.status} 加载失败</option>`;
-            return;
-        }
-        const data = await response.json();
+    const data = await apiGet('/api/clients');
+    if (data && data.data && data.data.length >= 0) {
         let options = [];
         if (includeEmptyOption) {
             options.push(`<option value="">${emptyLabel}</option>`);
@@ -436,8 +451,8 @@ async function loadClientsIntoSelect(selectId, includeEmptyOption, emptyLabel) {
             options.push('<option value="">无可用客户端</option>');
         }
         select.innerHTML = options.join('');
-    } catch (e) {
-        console.error('加载客户端列表失败:', e);
+    } else {
+        console.error('加载客户端列表失败');
         select.innerHTML = '<option value="">加载失败，请刷新重试</option>';
     }
 }
@@ -504,28 +519,18 @@ function showBindClientModal(agentId, currentClientId) {
     // 先显示模态框
     document.getElementById('bindClientModal').classList.add('active');
 
-    // 异步加载客户端列表
+    // 异步加载客户端列表使用共享函数
     setTimeout(() => {
         (async () => {
-            try {
-                const response = await fetch('/api/clients');
-                if (!response.ok) {
-                    clientSelect.innerHTML = `<option value="">HTTP ${response.status} 加载失败</option>`;
-                    return;
-                }
-                const data = await response.json();
+            const data = await apiGet('/api/clients');
+            if (data && data.data && data.data.length > 0) {
                 let options = ['<option value="">未绑定</option>'];
-                if (data && data.data && data.data.length > 0) {
-                    options = options.concat(data.data.map(client =>
-                        `<option value="${client.id}" ${client.id === currentClientId ? 'selected' : ''}>${client.name} (${client.id}) ${client.is_online ? '[在线]' : '[离线]'}</option>`
-                    ));
-                } else {
-                    options.push('<option value="">无可用客户端</option>');
-                }
+                options = options.concat(data.data.map(client =>
+                    `<option value="${client.id}" ${client.id === currentClientId ? 'selected' : ''}>${client.name} (${client.id}) ${client.is_online ? '[在线]' : '[离线]'}</option>`
+                ));
                 clientSelect.innerHTML = options.join('');
-            } catch (e) {
-                console.error('加载客户端列表失败:', e);
-                clientSelect.innerHTML = '<option value="">加载失败，请刷新重试</option>';
+            } else {
+                clientSelect.innerHTML = '<option value="">无可用客户端</option>';
             }
         })();
     }, 10);
@@ -586,30 +591,18 @@ function showEditAgentModal(agentId, name, description, defaultModel, maxTurns, 
     // 先显示模态框
     document.getElementById('editAgentModal').classList.add('active');
 
-    // 异步加载客户端列表
-    setTimeout(() => {
-        (async () => {
-            try {
-                const response = await fetch('/api/clients');
-                if (!response.ok) {
-                    clientSelect.innerHTML = `<option value="">HTTP ${response.status} 加载失败</option>`;
-                    return;
-                }
-                const data = await response.json();
-                let options = ['<option value="">未选择（使用默认客户端）</option>'];
-                if (data && data.data && data.data.length > 0) {
-                    options = options.concat(data.data.map(c =>
-                        `<option value="${c.id}" ${c.id === clientId ? 'selected' : ''}>${c.name} (${c.id}) ${c.is_online ? '[在线]' : '[离线]'}</option>`
-                    ));
-                } else {
-                    options.push('<option value="">无可用客户端</option>');
-                }
-                clientSelect.innerHTML = options.join('');
-            } catch (e) {
-                console.error('加载客户端列表失败:', e);
-                clientSelect.innerHTML = '<option value="">加载失败，请刷新重试</option>';
-            }
-        })();
+    // 异步加载客户端列表使用共享函数，需要预选择当前 clientId
+    setTimeout(async () => {
+        const data = await apiGet('/api/clients');
+        if (data && data.data && data.data.length > 0) {
+            let options = ['<option value="">未选择（使用默认客户端）</option>'];
+            options = options.concat(data.data.map(c =>
+                `<option value="${c.id}" ${c.id === clientId ? 'selected' : ''}>${c.name} (${c.id}) ${c.is_online ? '[在线]' : '[离线]'}</option>`
+            ));
+            clientSelect.innerHTML = options.join('');
+        } else {
+            clientSelect.innerHTML = '<option value="">无可用客户端</option>';
+        }
     }, 10);
 }
 
@@ -634,11 +627,7 @@ async function updateAgent() {
         client_id: document.getElementById('editAgentClient').value || null
     };
 
-    const result = await fetch(`/api/agents/${currentEditingAgentId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-    }).then(r => r.json()).catch(() => null);
+    const result = await apiPut(`/api/agents/${currentEditingAgentId}`, data);
 
     if (result && result.data) {
         showToast('更新成功', 'success');

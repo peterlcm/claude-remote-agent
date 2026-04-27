@@ -216,6 +216,15 @@ async def websocket_frontend(websocket: WebSocket):
         await manager.disconnect_frontend(websocket)
 
 
+# Validation helpers
+def validate_effort(effort: Optional[str]) -> str:
+    """Validate reasoning effort value, return default if invalid"""
+    valid_efforts = ["low", "medium", "high"]
+    if effort and effort in valid_efforts:
+        return effort
+    return "medium"
+
+
 # ============ REST API - 客户端管理 ============
 @app.get("/api/clients")
 def list_clients(db=Depends(get_db)):
@@ -375,18 +384,12 @@ def list_agents(db=Depends(get_db)):
 def create_agent(req: AgentCreateRequest, db=Depends(get_db)):
     """创建新 Agent"""
     agent_id = str(uuid.uuid4())[:12]
-    
+
     # 如果没有指定 client_id，使用默认客户端
     if not req.client_id:
         default_client = db.query(ProxyClient).first()
         if default_client:
             req.client_id = default_client.id
-    
-    # 确保 effort 是有效值
-    valid_efforts = ["low", "medium", "high"]
-    effort_value = req.effort
-    if effort_value not in valid_efforts:
-        effort_value = "medium"
 
     agent = Agent(
         id=agent_id,
@@ -395,7 +398,7 @@ def create_agent(req: AgentCreateRequest, db=Depends(get_db)):
         client_id=req.client_id,
         default_model=req.default_model,
         max_turns=req.max_turns,
-        effort=effort_value
+        effort=validate_effort(req.effort)
     )
     db.add(agent)
     db.commit()
@@ -450,12 +453,7 @@ def update_agent(agent_id: str, req: AgentUpdateRequest, db=Depends(get_db)):
     if req.max_turns is not None:
         agent.max_turns = req.max_turns
     if req.effort is not None:
-        # 确保 effort 是有效值
-        valid_efforts = ["low", "medium", "high"]
-        if req.effort in valid_efforts:
-            agent.effort = req.effort
-        else:
-            agent.effort = "medium"
+        agent.effort = validate_effort(req.effort)
     if req.client_id is not None:
         agent.client_id = req.client_id
     if req.is_active is not None:
