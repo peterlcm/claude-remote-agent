@@ -1053,29 +1053,24 @@ function updateTaskProgressRealtime(taskId, progress) {
         currentTaskProgress.output = progress.message;
     }
 
-    // 更新 UI：如果任务详情 modal 已打开且是当前任务，直接渲染
+    // 尝试更新任务详情 modal 中的实时输出
     updateRunningTaskDisplay();
+
+    // 刷新任务列表中的状态
+    loadTasks();
+    loadRecentTasks();
 }
 
 function updateRunningTaskDisplay() {
-    // 检查任务详情 modal 是否打开且是当前运行的任务
-    const modal = document.getElementById('taskDetailModal');
-    if (!modal || !modal.classList.contains('active')) {
-        return;
-    }
-    if (currentTaskProgress.taskId === null) {
-        return;
-    }
-
-    // 查找或创建实时输出区域
+    // 查找实时输出区域
     let outputArea = document.getElementById('realtimeOutput');
     if (!outputArea) {
-        return; // 不在任务详情页面
+        return; // modal 没打开或不是运行中的任务
     }
 
     // 更新进度条
     const displayTurn = Math.min(currentTaskProgress.turn, currentTaskProgress.max_turns);
-    const percent = (displayTurn / currentTaskProgress.max_turns) * 100;
+    const percent = currentTaskProgress.max_turns > 0 ? (displayTurn / currentTaskProgress.max_turns) * 100 : 0;
 
     const statusEl = outputArea.querySelector('.realtime-status');
     const turnsEl = outputArea.querySelector('.realtime-turns');

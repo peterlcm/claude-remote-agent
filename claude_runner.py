@@ -118,6 +118,7 @@ class ClaudeRunner:
 
             async def read_output():
                 """Read output from pty (combines stdout/stderr since pty merges them)"""
+                last_sent_time = 0
                 last_sent_length = 0
                 buffer = ''
                 while True:
@@ -187,12 +188,12 @@ class ClaudeRunner:
                                     # Add response to stdout buffer for logging
                                     stdout_buffer.append(f"[USER_CONFIRMATION: {response}]\n")
 
-                        # Send progress update with current full output
+                        # Throttled progress update: send at most every 0.5 seconds
                         if progress_callback:
                             current_length = len(stdout_buffer)
-                            if current_length > last_sent_length:
+                            now = time.time()
+                            if current_length > last_sent_length and (now - last_sent_time) >= 0.5:
                                 full_output = "".join(stdout_buffer)
-                                # Calculate approximate turn count (about 5 lines per turn)
                                 current_turn = len(stdout_buffer) // 5 + 1
                                 progress = TaskProgress(
                                     turn=current_turn,
@@ -202,9 +203,12 @@ class ClaudeRunner:
                                 )
                                 try:
                                     await progress_callback(progress)
+                                    # Give event loop a chance to actually send the data
+                                    await asyncio.sleep(0)
                                 except Exception as e:
                                     logger.error(f"Progress callback failed: {e}")
                                 last_sent_length = current_length
+                                last_sent_time = now
 
                     except OSError as e:
                         # Errno 5 is expected when PTY slave is closed after process exit
@@ -217,6 +221,20 @@ class ClaudeRunner:
                     except Exception as e:
                         logger.error(f"Unexpected error reading from pty: {e}")
                         break
+
+                # Send final progress update to ensure all output is pushed
+                if progress_callback and len(stdout_buffer) > last_sent_length:
+                    full_output = "".join(stdout_buffer)
+                    current_turn = len(stdout_buffer) // 5 + 1
+                    try:
+                        await progress_callback(TaskProgress(
+                            turn=current_turn,
+                            max_turns=options.max_turns,
+                            status="working",
+                            message=full_output
+                        ))
+                    except Exception as e:
+                        logger.error(f"Final progress callback failed: {e}")
 
             # With pty, stderr is merged into stdout
             async def read_stderr():
