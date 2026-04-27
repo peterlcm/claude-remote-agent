@@ -24,6 +24,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -137,14 +138,38 @@ class StdioMcpServer:
         self._stdout_lock = asyncio.Lock()
 
     async def serve(self) -> None:
+        """Read JSON-RPC frames from stdin and dispatch them.
+
+        We deliberately avoid ``loop.connect_read_pipe(sys.stdin)`` because the
+        Windows ProactorEventLoop cannot register subprocess stdin pipes with
+        IOCP (raises ``OSError [WinError 6] 句柄无效``). Instead we read stdin
+        synchronously in a background thread and hand frames over via an
+        asyncio.Queue. This works identically on Windows / Linux / macOS.
+        """
         loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
-        # Wrap stdin/stdout for asyncio.
-        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+        queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+
+        def _stdin_pump() -> None:
+            stdin_buffer = sys.stdin.buffer
+            try:
+                while True:
+                    line = stdin_buffer.readline()
+                    if not line:
+                        loop.call_soon_threadsafe(queue.put_nowait, None)
+                        return
+                    loop.call_soon_threadsafe(queue.put_nowait, line)
+            except Exception as exc:
+                _log(f"stdin pump error: {exc}")
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        pump_thread = threading.Thread(
+            target=_stdin_pump, name="permission_mcp-stdin", daemon=True
+        )
+        pump_thread.start()
+
         while True:
-            line = await reader.readline()
-            if not line:
+            line = await queue.get()
+            if line is None:
                 _log("stdin EOF, exiting")
                 return
             text = line.decode("utf-8", errors="replace").strip()
