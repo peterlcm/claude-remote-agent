@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Remote Agent - 管理面板</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-left">
+                <h1><i class="fa fa-robot"></i> Claude Remote Agent</h1>
+                <span class="subtitle">远程 Agent 管理面板</span>
+            </div>
+            <div class="header-right">
+                <div class="status-badge" id="serverStatus">
+                    <span class="status-dot online"></span>
+                    <span>服务运行中</span>
+                </div>
+                <div class="status-badge" id="wsStatus">
+                    <span class="status-dot offline" id="wsDot"></span>
+                    <span id="wsText">WebSocket 断开</span>
+                </div>
+            </div>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="dashboard">
+                <i class="fa fa-dashboard"></i> 仪表盘
+            </button>
+            <button class="tab-btn" data-tab="clients">
+                <i class="fa fa-desktop"></i> 客户端
+            </button>
+            <button class="tab-btn" data-tab="agents">
+                <i class="fa fa-user-circle"></i> Agents
+            </button>
+            <button class="tab-btn" data-tab="tasks">
+                <i class="fa fa-tasks"></i> 任务
+            </button>
+        </nav>
+
+        <main class="content">
+            <!-- 仪表盘 -->
+            <section id="dashboard" class="tab-content active">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon blue"><i class="fa fa-desktop"></i></div>
+                        <div class="stat-info">
+                            <h3 id="totalClients">0</h3>
+                            <p>总客户端</p>
+                        </div>
+                        <div class="stat-badge online" id="onlineClientsBadge">0 在线</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon green"><i class="fa fa-user-circle"></i></div>
+                        <div class="stat-info">
+                            <h3 id="totalAgents">0</h3>
+                            <p>总 Agents</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon purple"><i class="fa fa-tasks"></i></div>
+                        <div class="stat-info">
+                            <h3 id="totalTasks">0</h3>
+                            <p>总任务</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon orange"><i class="fa fa-check-circle"></i></div>
+                        <div class="stat-info">
+                            <h3 id="completedTasks">0</h3>
+                            <p>已完成</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3><i class="fa fa-bolt"></i> 快速操作</h3>
+                        <div class="quick-actions">
+                            <button class="btn btn-primary" onclick="showCreateTaskModal()">
+                                <i class="fa fa-plus"></i> 新建任务
+                            </button>
+                            <button class="btn btn-secondary" onclick="refreshAll()">
+                                <i class="fa fa-refresh"></i> 刷新数据
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3><i class="fa fa-history"></i> 最近任务</h3>
+                        <div class="task-list" id="recentTasks">
+                            <div class="empty-state">暂无任务</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 客户端管理 -->
+            <section id="clients" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fa fa-desktop"></i> 客户端列表</h3>
+                        <button class="btn btn-primary btn-sm" onclick="showCreateClientModal()">
+                            <i class="fa fa-plus"></i> 新建客户端
+                        </button>
+                    </div>
+                    <div class="client-list" id="clientList">
+                        <div class="empty-state">加载中...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Agent 管理 -->
+            <section id="agents" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fa fa-user-circle"></i> Agent 列表</h3>
+                        <button class="btn btn-primary btn-sm" onclick="showCreateAgentModal()">
+                            <i class="fa fa-plus"></i> 新建 Agent
+                        </button>
+                    </div>
+                    <div class="agent-list" id="agentList">
+                        <div class="empty-state">加载中...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 任务管理 -->
+            <section id="tasks" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fa fa-tasks"></i> 任务列表</h3>
+                        <button class="btn btn-primary btn-sm" onclick="showCreateTaskModal()">
+                            <i class="fa fa-plus"></i> 新建任务
+                        </button>
+                    </div>
+                    <div class="task-list-full" id="taskList">
+                        <div class="empty-state">加载中...</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- 新建客户端模态框 -->
+    <div class="modal" id="createClientModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>新建客户端</h3>
+                <button class="close-btn" onclick="closeModal('createClientModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>客户端名称</label>
+                    <input type="text" id="clientName" placeholder="输入客户端名称">
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="clientDescription" placeholder="输入描述（可选）"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('createClientModal')">取消</button>
+                <button class="btn btn-primary" onclick="createClient()">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建 Agent 模态框 -->
+    <div class="modal" id="createAgentModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>新建 Agent</h3>
+                <button class="close-btn" onclick="closeModal('createAgentModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Agent 名称</label>
+                    <input type="text" id="agentName" placeholder="输入 Agent 名称">
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="agentDescription" placeholder="输入描述（可选）"></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>默认模型</label>
+                        <select id="agentModel">
+                            <option value="sonnet">Sonnet</option>
+                            <option value="opus">Opus</option>
+                            <option value="haiku">Haiku</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>最大迭代次数</label>
+                        <input type="number" id="agentMaxTurns" value="10" min="1" max="100">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>绑定客户端</label>
+                    <select id="agentClient">
+                        <option value="">加载中...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>推理强度</label>
+                    <select id="agentEffort">
+                        <option value="low">低</option>
+                        <option value="medium" selected>中</option>
+                        <option value="high">高</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('createAgentModal')">取消</button>
+                <button class="btn btn-primary" onclick="createAgent()">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建任务模态框 -->
+    <div class="modal" id="createTaskModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>新建任务</h3>
+                <button class="close-btn" onclick="closeModal('createTaskModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>选择 Agent</label>
+                    <select id="taskAgent">
+                        <option value="">加载中...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>任务提示词</label>
+                    <textarea id="taskPrompt" placeholder="描述你想要 Claude 完成的任务..." rows="5"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>上下文（可选）</label>
+                    <textarea id="taskContext" placeholder="提供额外的上下文信息..." rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('createTaskModal')">取消</button>
+                <button class="btn btn-primary" onclick="createTask()">发送任务</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 任务详情模态框 -->
+    <div class="modal" id="taskDetailModal">
+        <div class="modal-content large">
+            <div class="modal-header">
+                <h3>任务详情</h3>
+                <button class="close-btn" onclick="closeModal('taskDetailModal')">&times;</button>
+            </div>
+            <div class="modal-body" id="taskDetailContent">
+                加载中...
+            </div>
+            <div class="modal-footer" id="taskDetailFooter">
+                <button class="btn btn-secondary" onclick="closeModal('taskDetailModal')">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 绑定客户端模态框 -->
+    <div class="modal" id="bindClientModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>绑定客户端</h3>
+                <button class="close-btn" onclick="closeModal('bindClientModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>选择客户端</label>
+                    <select id="bindAgentClient">
+                        <option value="">加载中...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="unbindClient">
+                        解除绑定（不绑定任何客户端）
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('bindClientModal')">取消</button>
+                <button class="btn btn-primary" onclick="bindAgentToClient()">确认绑定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑客户端模态框 -->
+    <div class="modal" id="editClientModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>编辑客户端</h3>
+                <button class="close-btn" onclick="closeModal('editClientModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>客户端名称</label>
+                    <input type="text" id="editClientName" placeholder="输入客户端名称">
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="editClientDescription" placeholder="输入描述（可选）"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('editClientModal')">取消</button>
+                <button class="btn btn-primary" onclick="updateClient()">保存修改</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑 Agent 模态框 -->
+    <div class="modal" id="editAgentModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>编辑 Agent</h3>
+                <button class="close-btn" onclick="closeModal('editAgentModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Agent 名称</label>
+                    <input type="text" id="editAgentName" placeholder="输入 Agent 名称">
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="editAgentDescription" placeholder="输入描述（可选）"></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>默认模型</label>
+                        <select id="editAgentModel">
+                            <option value="sonnet">Sonnet</option>
+                            <option value="opus">Opus</option>
+                            <option value="haiku">Haiku</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>最大迭代次数</label>
+                        <input type="number" id="editAgentMaxTurns" value="10" min="1" max="100">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>绑定客户端</label>
+                    <select id="editAgentClient">
+                        <option value="">加载中...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>推理强度</label>
+                    <select id="editAgentEffort">
+                        <option value="low">低</option>
+                        <option value="medium" selected>中</option>
+                        <option value="high">高</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('editAgentModal')">取消</button>
+                <button class="btn btn-primary" onclick="updateAgent()">保存修改</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 确认删除模态框 -->
+    <div class="modal" id="confirmDeleteModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>确认删除</h3>
+                <button class="close-btn" onclick="closeModal('confirmDeleteModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="deleteConfirmMessage">确定要删除吗？此操作不可撤销。</p>
+                <p style="color: #dc3545; font-size: 13px; margin-top: 10px;">
+                    <i class="fa fa-warning"></i> 如果有正在运行的任务，删除将被禁止。
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('confirmDeleteModal')">取消</button>
+                <button class="btn btn-danger" onclick="confirmDelete()">确认删除</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 客户端详情模态框 -->
+    <div class="modal" id="clientDetailModal">
+        <div class="modal-content large">
+            <div class="modal-header">
+                <h3>客户端详情</h3>
+                <button class="close-btn" onclick="closeModal('clientDetailModal')">&times;</button>
+            </div>
+            <div class="modal-body" id="clientDetailContent">
+                加载中...
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('clientDetailModal')">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Agent 详情模态框 -->
+    <div class="modal" id="agentDetailModal">
+        <div class="modal-content large">
+            <div class="modal-header">
+                <h3>Agent 详情</h3>
+                <button class="close-btn" onclick="closeModal('agentDetailModal')">&times;</button>
+            </div>
+            <div class="modal-body" id="agentDetailContent">
+                加载中...
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('agentDetailModal')">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
