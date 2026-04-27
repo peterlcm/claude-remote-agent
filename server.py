@@ -21,7 +21,10 @@ from models import (
     create_default_client, get_or_create_default_agent
 )
 from connection_manager import ConnectionManager
-from protocol import Message, MessageType, TaskPayload, TaskResult
+from protocol import (
+    Message, MessageType, TaskPayload, TaskResult,
+    UserConfirmationResponse, build_user_confirmation_response
+)
 
 # 初始化日志
 import logging
@@ -95,6 +98,14 @@ class TaskCreateRequest(BaseModel):
     model: Optional[str] = None
     max_turns: Optional[int] = None
     effort: Optional[str] = None
+
+
+class UserConfirmationRespondRequest(BaseModel):
+    """用户确认回应请求"""
+    client_id: str
+    request_id: str
+    task_id: str
+    value: str
 
 
 # ============ 首页路由 ============
@@ -220,9 +231,12 @@ async def websocket_frontend(websocket: WebSocket):
 def validate_effort(effort: Optional[str]) -> str:
     """Validate reasoning effort value, return default if invalid"""
     valid_efforts = ["low", "medium", "high"]
-    if effort and effort in valid_efforts:
+    # Allow empty string means "don't set effort"
+    if effort is None:
+        return ""
+    if effort in valid_efforts:
         return effort
-    return "medium"
+    return ""
 
 
 # ============ REST API - 客户端管理 ============
@@ -593,8 +607,8 @@ async def create_task(req: TaskCreateRequest, db=Depends(get_db)):
         context=req.context or "",
         options=json.dumps({
             "model": req.model or agent.default_model,
-            "max_turns": req.max_turns or agent.max_turns,
-            "effort": req.effort or agent.effort
+            "max_turns": req.max_turns if req.max_turns is not None else agent.max_turns,
+            "effort": req.effort if req.effort is not None else agent.effort
         }),
         status="pending"
     )
@@ -672,30 +686,32 @@ async def cancel_task(task_id: str, db=Depends(get_db)):
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     if task.status in ["completed", "failed", "cancelled"]:
         raise HTTPException(status_code=400, detail="Task already finished")
-    
+
     # 发送取消消息到客户端
-    if task.client and manager.is_client_online(task.client_id):
+    if task.client_id and manager.is_client_online(task.client_id):
         try:
             message = Message(
                 type="task.cancel",
                 id=task_id,
                 payload={}
             )
-            await manager.active_connections[task.client_id].send_text(message.to_json())
+            await manager.send_to_client(task.client_id, message)
             task.status = "cancelling"
             db.commit()
+            logger.info(f"Task cancellation requested: {task_id}")
             return {"data": {"success": True, "message": "Cancellation requested"}}
         except Exception as e:
-            logger.error(f"Failed to send cancellation: {e}")
+            logger.error(f"Failed to send cancellation for task {task_id}: {e}")
             raise HTTPException(status_code=500, detail="Failed to send cancellation")
     else:
         # 客户端不在线，直接标记为取消
         task.status = "cancelled"
         task.completed_at = datetime.utcnow()
         db.commit()
+        logger.info(f"Task cancelled (client offline): {task_id}")
         return {"data": {"success": True, "message": "Task cancelled (client offline)"}}
 
 
@@ -737,7 +753,7 @@ def get_stats(db=Depends(get_db)):
     total_tasks = db.query(Task).count()
     completed_tasks = db.query(Task).filter(Task.status == "completed").count()
     failed_tasks = db.query(Task).filter(Task.status == "failed").count()
-    
+
     return {
         "data": {
             "clients": {"total": total_clients, "online": online_clients},
@@ -750,6 +766,34 @@ def get_stats(db=Depends(get_db)):
             },
             "active_connections": len(manager.active_connections),
             "frontend_connections": len(manager.frontend_connections)
+        }
+    }
+
+
+# ============ REST API - 用户确认 ============
+@app.post("/api/user-confirmation/respond")
+async def user_confirmation_respond(req: UserConfirmationRespondRequest):
+    """提交用户确认回应，转发给对应的客户端"""
+    if req.client_id not in manager.active_connections:
+        raise HTTPException(status_code=400, detail="Client is not online")
+
+    # 构建回应消息并发送给客户端
+    response = UserConfirmationResponse(
+        request_id=req.request_id,
+        task_id=req.task_id,
+        value=req.value
+    )
+
+    message = build_user_confirmation_response(response)
+    success = await manager.send_to_client(req.client_id, message)
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to send response to client")
+
+    return {
+        "data": {
+            "success": True,
+            "message": "Response sent to client"
         }
     }
 

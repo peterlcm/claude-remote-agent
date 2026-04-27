@@ -12,10 +12,12 @@ from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from config import config
 from protocol import (
     Message, MessageType, TaskOptions, TaskPayload, TaskProgress,
+    UserConfirmationRequest, UserConfirmationResponse,
     build_register_message, build_heartbeat_message,
     build_task_started_message, build_task_progress_message,
     build_task_completed_message, build_task_failed_message,
-    build_task_cancelled_message, build_error_message
+    build_task_cancelled_message, build_error_message,
+    build_user_confirmation_request, build_user_confirmation_response
 )
 from claude_runner import ClaudeRunnerManager
 
@@ -40,6 +42,9 @@ class ClaudeRemoteAgent:
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._reconnect_attempts = 0
         self._shutdown = False
+
+        # 挂起的用户确认请求: request_id -> asyncio.Future
+        self._pending_confirmations: dict[str, asyncio.Future] = {}
 
     async def connect(self) -> bool:
         """连接到云端服务"""
@@ -110,6 +115,27 @@ class ClaudeRemoteAgent:
             logger.error(f"Failed to send message: {e}")
             self._connected = False
 
+    async def request_user_confirmation(self, request: UserConfirmationRequest) -> str:
+        """请求用户确认，等待用户回应并返回结果"""
+        request_id = request.request_id
+        future = asyncio.Future()
+        self._pending_confirmations[request_id] = future
+
+        # 发送请求到服务器
+        await self.send_message(build_user_confirmation_request(request))
+        logger.info(f"User confirmation requested: {request_id} for task {request.task_id}")
+
+        try:
+            # 等待用户回应，带超时
+            result = await asyncio.wait_for(future, timeout=request.timeout)
+            logger.info(f"User confirmation received: {request_id} -> {result}")
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(f"User confirmation timeout: {request_id}")
+            return "timeout"
+        finally:
+            self._pending_confirmations.pop(request_id, None)
+
     async def _heartbeat_loop(self):
         """心跳循环"""
         while self._connected and not self._shutdown:
@@ -141,6 +167,16 @@ class ClaudeRemoteAgent:
             elif message.type == MessageType.AGENT_REGISTER_ACK:
                 self._registered = True
                 logger.info("Registration acknowledged by server")
+            elif message.type == MessageType.USER_CONFIRMATION_RESPONSE:
+                # 用户确认回应，找到对应的 future 设置结果
+                request_id = message.payload.get("request_id")
+                if request_id in self._pending_confirmations:
+                    future = self._pending_confirmations[request_id]
+                    if not future.done():
+                        future.set_result(message.payload.get("value"))
+                        logger.info(f"User confirmation received for {request_id}: {message.payload.get('value')}")
+                else:
+                    logger.warning(f"Unknown or completed confirmation request: {request_id}")
             else:
                 logger.warning(f"Unknown message type: {message.type}")
 
@@ -204,7 +240,8 @@ class ClaudeRemoteAgent:
                 options=payload.options,
                 context=payload.context,
                 workdir=payload.workdir,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                confirmation_callback=self.request_user_confirmation
             )
 
             # 发送结果
@@ -215,7 +252,7 @@ class ClaudeRemoteAgent:
             else:
                 await self.send_message(build_task_failed_message(
                     task_id,
-                    error="Task execution failed",
+                    error=result.result or "Task execution failed",
                     error_code="EXECUTION_FAILED",
                     partial_output=result.result
                 ))
@@ -293,6 +330,12 @@ class ClaudeRemoteAgent:
         # 取消所有运行中的任务
         for task_id in self.runner_manager.get_running_tasks():
             self.runner_manager.cancel_task(task_id)
+
+        # 清理所有挂起的用户确认请求
+        for future in self._pending_confirmations.values():
+            if not future.done():
+                future.set_result("cancelled")
+        self._pending_confirmations.clear()
 
         # 关闭连接
         if self.websocket:

@@ -208,8 +208,9 @@
                 <div class="form-group">
                     <label>推理强度</label>
                     <select id="agentEffort">
+                        <option value="" selected>不设置</option>
                         <option value="low">低</option>
-                        <option value="medium" selected>中</option>
+                        <option value="medium">中</option>
                         <option value="high">高</option>
                     </select>
                 </div>
@@ -260,6 +261,16 @@
             </div>
             <div class="modal-body" id="taskDetailContent">
                 加载中...
+            </div>
+            <div class="task-progress-container" id="taskProgressContainer" style="display: none;">
+                <div class="progress-header">
+                    <span class="progress-status" id="progressStatus">思考中...</span>
+                    <span class="progress-turns" id="progressTurns">0 / 10</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-log" id="progressLog"></div>
             </div>
             <div class="modal-footer" id="taskDetailFooter">
                 <button class="btn btn-secondary" onclick="closeModal('taskDetailModal')">关闭</button>
@@ -358,8 +369,9 @@
                 <div class="form-group">
                     <label>推理强度</label>
                     <select id="editAgentEffort">
+                        <option value="" selected>不设置</option>
                         <option value="low">低</option>
-                        <option value="medium" selected>中</option>
+                        <option value="medium">中</option>
                         <option value="high">高</option>
                     </select>
                 </div>
@@ -425,6 +437,27 @@
 
     <!-- Toast 通知 -->
     <div class="toast-container" id="toastContainer"></div>
+
+    <!-- 用户确认模态框 -->
+    <div class="modal" id="userConfirmationModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="confirmationTitle">需要确认</h3>
+                <button class="close-btn" onclick="closeUserConfirmation()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="confirmation-message" id="confirmationMessage"></div>
+                <div class="confirmation-prompt" id="confirmationPrompt"></div>
+                <div class="confirmation-options" id="confirmationOptions"></div>
+                <div class="confirmation-timeout">
+                    <i class="fa fa-clock-o"></i> 超时未响应将自动取消
+                </div>
+            </div>
+            <div class="modal-footer">
+                <span class="request-id" id="requestIdInfo"></span>
+            </div>
+        </div>
+    </div>
 
     <script src="/static/app.js"></script>
 </body>

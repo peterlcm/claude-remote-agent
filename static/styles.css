@@ -653,17 +653,152 @@ body {
     .dashboard-grid {
         grid-template-columns: 1fr;
     }
-    
+
     .header {
         flex-direction: column;
         gap: 16px;
     }
-    
+
     .tabs {
         flex-wrap: wrap;
     }
-    
+
     .form-row {
         grid-template-columns: 1fr;
+    }
+}
+
+/* ============ 实时任务进度样式 ============ */
+.task-progress-container {
+    margin: 16px 24px;
+    padding: 16px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    border: 1px solid #e9ecef;
+}
+
+.progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.progress-status {
+    font-weight: 500;
+    color: #667eea;
+    animation: pulse-status 2s infinite;
+}
+
+@keyframes pulse-status {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+.progress-turns {
+    font-size: 13px;
+    color: #666;
+    font-weight: 500;
+}
+
+.progress-bar {
+    height: 8px;
+    background: #e9ecef;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.progress-log {
+    max-height: 200px;
+    overflow-y: auto;
+    background: white;
+    border-radius: 6px;
+    border: 1px solid #e9ecef;
+}
+
+.progress-log-entry {
+    padding: 8px 12px;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 13px;
+    color: #333;
+    font-family: monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.progress-log-entry:last-child {
+    border-bottom: none;
+}
+
+/* ============ 用户确认对话框样式 ============ */
+.confirmation-message {
+    font-size: 15px;
+    color: #333;
+    margin-bottom: 16px;
+    line-height: 1.5;
+}
+
+.confirmation-prompt {
+    font-size: 14px;
+    color: #666;
+    margin-bottom: 20px;
+    padding: 12px;
+    background: #fff3cd;
+    border-radius: 6px;
+    border-left: 4px solid #ffc107;
+}
+
+.confirmation-options {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.btn-confirmation {
+    flex: 1;
+    min-width: 100px;
+    padding: 12px 20px;
+    font-size: 15px;
+    transition: transform 0.1s;
+}
+
+.btn-confirmation:hover {
+    transform: translateY(-2px);
+}
+
+.confirmation-timeout {
+    font-size: 12px;
+    color: #999;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.request-id {
+    font-size: 11px;
+    color: #999;
+    font-family: monospace;
+}
+
+/* 等待确认脉冲动画 */
+.waiting-confirmation {
+    animation: pulse-waiting 1.5s infinite;
+}
+
+@keyframes pulse-waiting {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 8px rgba(102, 126, 234, 0);
     }
 }

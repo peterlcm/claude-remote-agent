@@ -30,6 +30,35 @@ class MessageType(str, Enum):
     # 错误
     ERROR = "error"
 
+    # 用户确认
+    USER_CONFIRMATION_REQUEST = "user_confirmation.request"
+    USER_CONFIRMATION_RESPONSE = "user_confirmation.response"
+
+
+class ConfirmationOption(BaseModel):
+    """确认选项"""
+    label: str
+    value: str
+
+
+class UserConfirmationRequest(BaseModel):
+    """用户确认请求"""
+    request_id: str
+    task_id: str
+    title: str
+    message: str
+    prompt: str
+    options: list[ConfirmationOption] = []
+    timeout: int = 300  # 超时时间（秒）
+
+
+class UserConfirmationResponse(BaseModel):
+    """用户确认回应"""
+    request_id: str
+    task_id: str
+    value: str
+    timestamp: float = Field(default_factory=time.time)
+
 
 class TaskOptions(BaseModel):
     """任务选项"""
@@ -184,4 +213,22 @@ def build_error_message(error: str,
             "error": error,
             "error_code": error_code
         }
+    )
+
+
+def build_user_confirmation_request(request: UserConfirmationRequest) -> Message:
+    """构建用户确认请求消息"""
+    return Message(
+        type=MessageType.USER_CONFIRMATION_REQUEST,
+        id=request.task_id,
+        payload=request.model_dump()
+    )
+
+
+def build_user_confirmation_response(response: UserConfirmationResponse) -> Message:
+    """构建用户确认回应消息"""
+    return Message(
+        type=MessageType.USER_CONFIRMATION_RESPONSE,
+        id=response.task_id,
+        payload=response.model_dump()
     )

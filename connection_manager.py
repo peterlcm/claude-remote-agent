@@ -214,6 +214,15 @@ class ConnectionManager:
                             "client_id": client_id
                         })
 
+                # 用户确认请求
+                elif message.type == "user_confirmation.request":
+                    # 直接广播给所有前端，让前端显示确认对话框
+                    await self.broadcast_to_frontend({
+                        "type": "user_confirmation_request",
+                        "client_id": client_id,
+                        "request": message.payload
+                    })
+
             finally:
                 db.close()
 

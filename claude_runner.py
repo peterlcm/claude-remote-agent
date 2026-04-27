@@ -6,11 +6,16 @@ import json
 import os
 import logging
 import time
+import uuid
+import pty
+import termios
+import fcntl
+import os
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Awaitable, Tuple
 
 from config import config
-from protocol import TaskOptions, TaskResult, TaskProgress
+from protocol import TaskOptions, TaskResult, TaskProgress, UserConfirmationRequest, ConfirmationOption
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +33,10 @@ class ClaudeRunner:
                   prompt: str,
                   options: TaskOptions,
                   context: Optional[str] = None,
-                  progress_callback: Optional[Callable[[TaskProgress], None]] = None,
-                  workdir: Optional[str] = None) -> TaskResult:
+                  progress_callback: Optional[Callable[[TaskProgress], Awaitable[None]]] = None,
+                  confirmation_callback: Optional[Callable[[UserConfirmationRequest], Awaitable[str]]] = None,
+                  workdir: Optional[str] = None,
+                  task_id: Optional[str] = None) -> TaskResult:
         """
         Execute Claude Code task
 
@@ -38,6 +45,7 @@ class ClaudeRunner:
             options: Task options
             context: Additional context
             progress_callback: Progress callback function
+            confirmation_callback: User confirmation callback function
             workdir: Working directory (overrides default)
 
         Returns:
@@ -45,6 +53,7 @@ class ClaudeRunner:
         """
         start_time = time.time()
         self._cancelled = False
+        self._task_id = task_id
 
         # Determine working directory
         current_workdir = Path(workdir).resolve() if workdir else self.workdir
@@ -53,41 +62,208 @@ class ClaudeRunner:
             # Build command
             cmd = self._build_command(prompt, options, context)
 
-            logger.info(f"Executing Claude command: {' '.join(cmd[:3])}...")
+            # Use stdbuf to disable stdout buffering for realtime output
+            # This allows us to read output line-by-line incrementally
+            full_cmd = ["stdbuf", "-o0"] + cmd
+
+            logger.info(f"Executing Claude command: {' '.join(full_cmd[:3])}...")
             logger.info(f"Workdir: {current_workdir}")
 
-            # Execute command
+            # Create pseudo-terminal so Claude thinks it's running in an interactive terminal
+            # This prevents the 3s timeout on stdin input when waiting for confirmation
+            master_fd, slave_fd = pty.openpty()
+
+            # Set terminal attributes
+            term_attr = pty.tcgetattr(slave_fd)
+            pty.tcsetattr(slave_fd, termios.TCSADRAIN, term_attr)
+
+            # Make non-blocking
+            fcntl.fcntl(master_fd, fcntl.F_SETFL, fcntl.fcntl(master_fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+
+            # Execute command with pty
             process = await asyncio.create_subprocess_exec(
-                *cmd,
+                *full_cmd,
                 cwd=str(current_workdir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
                 env=self._get_env()
             )
 
+            # Close our copy of slave_fd after process creation
+            # Because the process already has its own copy
+            # If we don't close it, PTY will hang waiting for EOF
+            os.close(slave_fd)
+
             self._current_process = process
 
-            # Wait for completion (with timeout)
+            # Create async file objects for reading/writing
+            master = os.fdopen(master_fd, 'r+b', 0)
+
+            # Convert to asyncio stream
+            loop = asyncio.get_event_loop()
+            reader = asyncio.StreamReader(loop=loop)
+            reader_protocol = asyncio.StreamReaderProtocol(reader)
+            transport, _ = await loop.connect_read_pipe(
+                lambda: reader_protocol, master
+            )
+
+            # Write side
+            write_transport = transport
+            writer = asyncio.StreamWriter(write_transport, reader_protocol, None, loop)
+
+            # Read output incrementally for realtime progress
+            stdout_buffer: list[str] = []
+            stderr_buffer: list[str] = []
+
+            async def read_output():
+                """Read output from pty (combines stdout/stderr since pty merges them)"""
+                last_sent_length = 0
+                buffer = ''
+                while True:
+                    try:
+                        chunk = await reader.read(1024)
+                        if not chunk:
+                            # EOF
+                            break
+                        buffer += chunk.decode("utf-8", errors="replace")
+
+                        # Split into lines
+                        while '\n' in buffer:
+                            line, buffer = buffer.split('\n', 1)
+                            line_str = line + '\n'
+                            stdout_buffer.append(line_str)
+
+                            # Check if this looks like an interactive confirmation prompt
+                            # Only trigger on lines that end with a question mark and contain y/n
+                            if confirmation_callback:
+                                lower_line = line_str.lower()
+                                # More strict matching to avoid false positives
+                                is_confirmation = (
+                                    ('do you want to proceed' in lower_line and '?' in line_str) or
+                                    ('continue?' in lower_line) or
+                                    ('proceed?' in lower_line) or
+                                    ('are you sure' in lower_line and '?' in line_str) or
+                                    ('(y/n)' in lower_line) or
+                                    ('[y/n]' in lower_line) or
+                                    ('y/n' in lower_line and '?' in line_str)
+                                )
+                                if is_confirmation:
+                                    # This looks like a real confirmation request
+                                    request_id = str(uuid.uuid4())[:8]
+                                    task_id = self._task_id or str(uuid.uuid4())[:8]
+
+                                    request = UserConfirmationRequest(
+                                        request_id=request_id,
+                                        task_id=task_id,
+                                        title="需要确认",
+                                        message="Claude 需要您确认是否继续执行",
+                                        prompt=line.strip(),
+                                        options=[
+                                            ConfirmationOption(label="确认 (y)", value="y"),
+                                            ConfirmationOption(label="取消 (N)", value="n")
+                                        ],
+                                        timeout=300  # 5 minutes for user to respond
+                                    )
+
+                                    logger.info(f"Confirmation requested for task {task_id}: {line.strip()}")
+
+                                    # Call the confirmation callback to get user response
+                                    try:
+                                        response = await confirmation_callback(request)
+                                    except Exception as e:
+                                        logger.error(f"Confirmation callback failed: {e}")
+                                        response = None
+
+                                    if response:
+                                        # Write the response back to pty
+                                        try:
+                                            writer.write((response + "\n").encode("utf-8"))
+                                            await writer.drain()
+                                            logger.info(f"User confirmation sent: {response}")
+                                        except Exception as e:
+                                            logger.error(f"Failed to write to stdin: {e}")
+
+                                    # Add response to stdout buffer for logging
+                                    stdout_buffer.append(f"[USER_CONFIRMATION: {response}]\n")
+
+                        # Send progress update with current full output
+                        if progress_callback:
+                            current_length = len(stdout_buffer)
+                            if current_length > last_sent_length:
+                                full_output = "".join(stdout_buffer)
+                                # Calculate approximate turn count (about 5 lines per turn)
+                                current_turn = len(stdout_buffer) // 5 + 1
+                                progress = TaskProgress(
+                                    turn=current_turn,
+                                    max_turns=options.max_turns,
+                                    status="working",
+                                    message=full_output
+                                )
+                                try:
+                                    await progress_callback(progress)
+                                except Exception as e:
+                                    logger.error(f"Progress callback failed: {e}")
+                                last_sent_length = current_length
+
+                    except OSError as e:
+                        # Errno 5 is expected when PTY slave is closed after process exit
+                        # This happens because when all slave fds are closed, master read gets errno 5
+                        if e.errno == 5:  # Input/output error - this is normal
+                            logger.debug(f"Task {self._task_id}: Got expected EOF on PTY read (errno 5), stopping read")
+                            break
+                        logger.error(f"OSError reading from pty: {e}")
+                        break
+                    except Exception as e:
+                        logger.error(f"Unexpected error reading from pty: {e}")
+                        break
+
+            # With pty, stderr is merged into stdout
+            async def read_stderr():
+                """No-op since pty merges streams"""
+                pass
+
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=options.timeout
-                )
+                # Read output from pty (stderr is merged into stdout)
+                output_task = asyncio.create_task(read_output())
+                stderr_task = asyncio.create_task(read_stderr())
+
+                # Wait for read to complete
+                await asyncio.gather(output_task, stderr_task)
+
+                # Wait for process to complete
+                await asyncio.wait_for(process.wait(), timeout=options.timeout)
             except asyncio.TimeoutError:
                 logger.error("Claude execution timed out")
                 if process.returncode is None:
                     process.kill()
                     await process.wait()
+                # Cleanup
+                writer.close()
+                await writer.wait_closed()
+                # slave_fd already closed earlier
                 return TaskResult(
                     success=False,
                     result="",
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
 
+            # Combine output - with pty, stderr is merged into stdout
+            stdout = "".join(stdout_buffer)
+            stderr = ""  # Already merged
+
+            # Cleanup
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception as e:
+                logger.debug(f"Cleanup warning on writer: {e}")
+            # slave_fd already closed earlier
+
             # Parse output
             result = self._parse_output(
-                stdout.decode("utf-8", errors="replace"),
-                stderr.decode("utf-8", errors="replace"),
+                stdout,
+                stderr,
                 process.returncode
             )
 
@@ -103,6 +279,10 @@ class ClaudeRunner:
             if self._current_process and self._current_process.returncode is None:
                 self._current_process.kill()
                 await self._current_process.wait()
+            # Cleanup pty
+            if 'writer' in locals():
+                writer.close()
+            # slave_fd already closed earlier
             return TaskResult(
                 success=False,
                 result="",
@@ -110,6 +290,10 @@ class ClaudeRunner:
             )
         except Exception as e:
             logger.exception(f"Claude execution error: {e}")
+            # Cleanup pty
+            if 'writer' in locals():
+                writer.close()
+            # slave_fd already closed earlier
             return TaskResult(
                 success=False,
                 result="",
@@ -247,14 +431,15 @@ class ClaudeRunnerManager:
                        options: TaskOptions,
                        context: Optional[str] = None,
                        workdir: str = ".",
-                       progress_callback: Optional[Callable] = None) -> TaskResult:
+                       progress_callback: Optional[Callable[[TaskProgress], Awaitable[None]]] = None,
+                       confirmation_callback: Optional[Callable[[UserConfirmationRequest], Awaitable[str]]] = None) -> TaskResult:
         """Run task with concurrency limit"""
         async with self.semaphore:
             runner = ClaudeRunner(workdir)
 
             # Create task
             task = asyncio.create_task(
-                runner.run(prompt, options, context, progress_callback)
+                runner.run(prompt, options, context, progress_callback, confirmation_callback, workdir, task_id)
             )
 
             self.runners[task_id] = (runner, task)

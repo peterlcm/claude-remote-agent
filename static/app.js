@@ -1,6 +1,12 @@
 // Global state
 let ws = null;
 let currentStats = {};
+let currentTaskProgress = {
+    taskId: null,
+    turn: 0,
+    max_turns: 10,
+    status: 'idle'
+};
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -59,7 +65,7 @@ function connectWebSocket() {
 
 function handleWebSocketMessage(message) {
     console.log('WebSocket message:', message);
-    
+
     switch (message.type) {
         case 'client_connected':
         case 'client_disconnected':
@@ -67,13 +73,22 @@ function handleWebSocketMessage(message) {
             loadClients();
             break;
         case 'task_started':
+            refreshStats();
+            break;
         case 'task_progress':
+            // 只更新实时进度，不需要全量刷新 API
+            updateTaskProgressRealtime(message.task_id, message.progress);
+            break;
         case 'task_completed':
         case 'task_failed':
         case 'task_cancelled':
             refreshStats();
-            loadTasks();
-            loadRecentTasks();
+            // 完成后隐藏进度容器
+            hideProgressContainer();
+            break;
+        case 'user_confirmation_request':
+            // 显示用户确认对话框
+            showUserConfirmation(message.client_id, message.request);
             break;
     }
 }
@@ -810,16 +825,35 @@ async function showTaskDetail(taskId) {
     const container = document.getElementById('taskDetailContent');
     container.innerHTML = '<div class="empty-state">加载中...</div>';
     document.getElementById('taskDetailModal').classList.add('active');
-    
+
+    // If this is the currently running task, show progress container immediately
+    if (currentTaskProgress.taskId === taskId) {
+        const container = document.getElementById('taskProgressContainer');
+        container.style.display = 'block';
+        updateProgressUI();
+    }
+
     const data = await apiGet(`/api/tasks/${taskId}`);
-    
+
     if (!data || !data.data) {
         container.innerHTML = '<div class="empty-state">加载失败</div>';
         return;
     }
-    
+
     const task = data.data;
-    
+
+    // If task is still running, show real-time progress container
+    if (task.status === 'running') {
+        currentTaskProgress.taskId = taskId;
+        currentTaskProgress.max_turns = task.num_turns || 10;
+        const container = document.getElementById('taskProgressContainer');
+        container.style.display = 'block';
+        container.querySelector('#progressLog').innerHTML = '';
+        updateProgressUI();
+    } else {
+        hideProgressContainer();
+    }
+
     let logsHtml = '';
     if (task.logs && task.logs.length > 0) {
         logsHtml = `
@@ -834,7 +868,7 @@ async function showTaskDetail(taskId) {
             </div>
         `;
     }
-    
+
     container.innerHTML = `
         <div class="task-detail-info">
             <div class="task-detail-row">
@@ -884,17 +918,17 @@ async function showTaskDetail(taskId) {
             </div>
             ` : ''}
         </div>
-        
+
         ${task.result ? `
             <h4>执行结果</h4>
             <div class="task-result">${escapeHtml(task.result)}</div>
         ` : ''}
-        
+
         ${task.error_message ? `
             <h4>错误信息</h4>
             <div class="task-result" style="background: #f8d7da; color: #721c24;">${escapeHtml(task.error_message)}</div>
         ` : ''}
-        
+
         ${logsHtml}
     `;
 
@@ -982,4 +1016,169 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// ============ 实时任务进度 ============
+function updateTaskProgressRealtime(taskId, progress) {
+    // 更新全局状态
+    currentTaskProgress.taskId = taskId;
+    currentTaskProgress.turn = progress.turn || 0;
+    currentTaskProgress.max_turns = progress.max_turns || 10;
+    currentTaskProgress.status = progress.status || 'thinking';
+
+    // 如果进度容器不存在（没打开任务详情），显示容器
+    const container = document.getElementById('taskProgressContainer');
+    if (container.style.display !== 'block') {
+        container.style.display = 'block';
+    }
+
+    // 更新 UI
+    updateProgressUI();
+
+    // 更新进度日志 - 我们每次收到的是完整的全部输出，直接替换
+    if (progress.message !== undefined && progress.message !== null) {
+        setProgressOutput(progress.message);
+    }
+}
+
+function updateProgressUI() {
+    // Ensure turn doesn't exceed max_turns for display
+    const displayTurn = Math.min(currentTaskProgress.turn, currentTaskProgress.max_turns);
+    const percent = (displayTurn / currentTaskProgress.max_turns) * 100;
+    document.getElementById('progressFill').style.width = percent + '%';
+    document.getElementById('progressTurns').textContent =
+        `${displayTurn} / ${currentTaskProgress.max_turns}`;
+
+    const statusText = {
+        'idle': '空闲',
+        'thinking': '思考中',
+        'tool_use': '使用工具',
+        'waiting_confirmation': '等待用户确认',
+        'working': '执行中'
+    };
+    document.getElementById('progressStatus').textContent =
+        statusText[currentTaskProgress.status] || currentTaskProgress.status;
+}
+
+function hideProgressContainer() {
+    const container = document.getElementById('taskProgressContainer');
+    container.style.display = 'none';
+    document.getElementById('progressLog').innerHTML = '';
+    currentTaskProgress.taskId = null;
+}
+
+function setProgressOutput(fullOutput) {
+    // 设置完整输出内容（每次都是全量更新）
+    const logContainer = document.getElementById('progressLog');
+    if (!logContainer) {
+        console.error('progressLog element not found');
+        return;
+    }
+    logContainer.innerHTML = '';
+
+    // 按行分割，每一行作为一个 entry
+    const lines = fullOutput.split('\n');
+    lines.forEach(line => {
+        const logEntry = document.createElement('div');
+        logEntry.className = 'progress-log-entry';
+        logEntry.textContent = line;
+        logContainer.appendChild(logEntry);
+    });
+
+    // 自动滚动到底部
+    logContainer.scrollTop = logContainer.scrollHeight;
+}
+
+function addProgressLog(line) {
+    // 追加单行日志（保留用于向后兼容）
+    const logContainer = document.getElementById('progressLog');
+    if (!logContainer) {
+        console.error('progressLog element not found');
+        return;
+    }
+    const logEntry = document.createElement('div');
+    logEntry.className = 'progress-log-entry';
+    logEntry.textContent = line;
+    logContainer.appendChild(logEntry);
+
+    // Limit maximum number of log entries to prevent DOM bloat
+    const maxEntries = 200;
+    const entries = logContainer.getElementsByClassName('progress-log-entry');
+    if (entries.length > maxEntries) {
+        logContainer.removeChild(entries[0]);
+    }
+
+    // 自动滚动到底部
+    logContainer.scrollTop = logContainer.scrollHeight;
+}
+
+// ============ 用户确认 ============
+let currentConfirmation = null;
+
+function showUserConfirmation(clientId, request) {
+    currentConfirmation = {
+        clientId: clientId,
+        requestId: request.request_id,
+        taskId: request.task_id
+    };
+
+    document.getElementById('confirmationTitle').textContent = request.title || '需要确认';
+    document.getElementById('confirmationMessage').textContent = request.message || '';
+    document.getElementById('confirmationPrompt').textContent = request.prompt || '';
+    document.getElementById('requestIdInfo').textContent = `请求 ID: ${request.request_id}`;
+
+    // 生成选项按钮
+    const optionsContainer = document.getElementById('confirmationOptions');
+    optionsContainer.innerHTML = '';
+    if (request.options && request.options.length > 0) {
+        request.options.forEach(option => {
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-confirmation';
+            btn.textContent = option.label;
+            btn.onclick = () => submitUserConfirmation(option.value);
+            optionsContainer.appendChild(btn);
+        });
+    } else {
+        // 默认选项
+        const btnYes = document.createElement('button');
+        btnYes.className = 'btn btn-primary btn-confirmation';
+        btnYes.textContent = '确认';
+        btnYes.onclick = () => submitUserConfirmation('yes');
+        optionsContainer.appendChild(btnYes);
+
+        const btnNo = document.createElement('button');
+        btnNo.className = 'btn btn-secondary btn-confirmation';
+        btnNo.textContent = '取消';
+        btnNo.onclick = () => submitUserConfirmation('no');
+        optionsContainer.appendChild(btnNo);
+    }
+
+    document.getElementById('userConfirmationModal').classList.add('active');
+    showToast('收到用户确认请求', 'info');
+}
+
+async function submitUserConfirmation(value) {
+    if (!currentConfirmation) {
+        showToast('没有待处理的确认请求', 'error');
+        return;
+    }
+
+    const response = await apiPost('/api/user-confirmation/respond', {
+        client_id: currentConfirmation.clientId,
+        request_id: currentConfirmation.requestId,
+        task_id: currentConfirmation.taskId,
+        value: value
+    });
+
+    if (response && response.data && response.data.success) {
+        showToast('确认已提交', 'success');
+        closeUserConfirmation();
+    } else {
+        showToast('提交失败，请检查客户端是否在线', 'error');
+    }
+}
+
+function closeUserConfirmation() {
+    document.getElementById('userConfirmationModal').classList.remove('active');
+    currentConfirmation = null;
 }
