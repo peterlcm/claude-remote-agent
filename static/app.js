@@ -5,7 +5,8 @@ let currentTaskProgress = {
     taskId: null,
     turn: 0,
     max_turns: 10,
-    status: 'idle'
+    status: 'idle',
+    output: ''  // 缓存完整输出内容
 };
 
 // Initialize
@@ -83,8 +84,13 @@ function handleWebSocketMessage(message) {
         case 'task_failed':
         case 'task_cancelled':
             refreshStats();
-            // 完成后隐藏进度容器
-            hideProgressContainer();
+            // 如果详情 modal 正在显示这个任务，重新加载
+            if (currentTaskProgress.taskId === message.task_id) {
+                hideProgressContainer();
+                showTaskDetail(message.task_id);
+            }
+            loadTasks();
+            loadRecentTasks();
             break;
         case 'user_confirmation_request':
             // 显示用户确认对话框
@@ -826,11 +832,10 @@ async function showTaskDetail(taskId) {
     container.innerHTML = '<div class="empty-state">加载中...</div>';
     document.getElementById('taskDetailModal').classList.add('active');
 
-    // If this is the currently running task, show progress container immediately
-    if (currentTaskProgress.taskId === taskId) {
-        const container = document.getElementById('taskProgressContainer');
-        container.style.display = 'block';
-        updateProgressUI();
+    // 隐藏旧的进度容器（如果存在）
+    const oldProgressContainer = document.getElementById('taskProgressContainer');
+    if (oldProgressContainer) {
+        oldProgressContainer.style.display = 'none';
     }
 
     const data = await apiGet(`/api/tasks/${taskId}`);
@@ -842,15 +847,30 @@ async function showTaskDetail(taskId) {
 
     const task = data.data;
 
-    // If task is still running, show real-time progress container
-    if (task.status === 'running') {
+    // 判断是否正在运行
+    const isRunning = (task.status === 'running' || task.status === 'queued' || task.status === 'pending');
+
+    // 实时输出区域（只在任务运行中显示）
+    let realtimeHtml = '';
+    if (isRunning) {
         currentTaskProgress.taskId = taskId;
-        currentTaskProgress.max_turns = task.num_turns || 10;
-        const container = document.getElementById('taskProgressContainer');
-        container.style.display = 'block';
-        container.querySelector('#progressLog').innerHTML = '';
-        updateProgressUI();
+        const displayTurn = Math.min(currentTaskProgress.turn, currentTaskProgress.max_turns);
+        const percent = currentTaskProgress.max_turns > 0 ? (displayTurn / currentTaskProgress.max_turns) * 100 : 0;
+
+        realtimeHtml = `
+            <div id="realtimeOutput" class="realtime-output">
+                <div class="realtime-header">
+                    <span class="realtime-status">${currentTaskProgress.status === 'working' ? '执行中' : '思考中'}</span>
+                    <span class="realtime-turns">${displayTurn} / ${currentTaskProgress.max_turns}</span>
+                </div>
+                <div class="realtime-progress-bar">
+                    <div class="realtime-fill" style="width: ${percent}%"></div>
+                </div>
+                <pre class="realtime-log">${escapeHtml(currentTaskProgress.output || '等待输出...')}</pre>
+            </div>
+        `;
     } else {
+        // 任务已结束，清除进度
         hideProgressContainer();
     }
 
@@ -870,6 +890,8 @@ async function showTaskDetail(taskId) {
     }
 
     container.innerHTML = `
+        ${realtimeHtml}
+
         <div class="task-detail-info">
             <div class="task-detail-row">
                 <div class="task-detail-label">任务 ID</div>
@@ -1026,90 +1048,64 @@ function updateTaskProgressRealtime(taskId, progress) {
     currentTaskProgress.max_turns = progress.max_turns || 10;
     currentTaskProgress.status = progress.status || 'thinking';
 
-    // 如果进度容器不存在（没打开任务详情），显示容器
-    const container = document.getElementById('taskProgressContainer');
-    if (container.style.display !== 'block') {
-        container.style.display = 'block';
-    }
-
-    // 更新 UI
-    updateProgressUI();
-
-    // 更新进度日志 - 我们每次收到的是完整的全部输出，直接替换
+    // 缓存输出内容
     if (progress.message !== undefined && progress.message !== null) {
-        setProgressOutput(progress.message);
+        currentTaskProgress.output = progress.message;
     }
+
+    // 更新 UI：如果任务详情 modal 已打开且是当前任务，直接渲染
+    updateRunningTaskDisplay();
 }
 
-function updateProgressUI() {
-    // Ensure turn doesn't exceed max_turns for display
+function updateRunningTaskDisplay() {
+    // 检查任务详情 modal 是否打开且是当前运行的任务
+    const modal = document.getElementById('taskDetailModal');
+    if (!modal || !modal.classList.contains('active')) {
+        return;
+    }
+    if (currentTaskProgress.taskId === null) {
+        return;
+    }
+
+    // 查找或创建实时输出区域
+    let outputArea = document.getElementById('realtimeOutput');
+    if (!outputArea) {
+        return; // 不在任务详情页面
+    }
+
+    // 更新进度条
     const displayTurn = Math.min(currentTaskProgress.turn, currentTaskProgress.max_turns);
     const percent = (displayTurn / currentTaskProgress.max_turns) * 100;
-    document.getElementById('progressFill').style.width = percent + '%';
-    document.getElementById('progressTurns').textContent =
-        `${displayTurn} / ${currentTaskProgress.max_turns}`;
 
-    const statusText = {
-        'idle': '空闲',
-        'thinking': '思考中',
-        'tool_use': '使用工具',
-        'waiting_confirmation': '等待用户确认',
-        'working': '执行中'
-    };
-    document.getElementById('progressStatus').textContent =
-        statusText[currentTaskProgress.status] || currentTaskProgress.status;
+    const statusEl = outputArea.querySelector('.realtime-status');
+    const turnsEl = outputArea.querySelector('.realtime-turns');
+    const fillEl = outputArea.querySelector('.realtime-fill');
+    const logEl = outputArea.querySelector('.realtime-log');
+
+    if (statusEl) {
+        const statusText = {
+            'idle': '空闲', 'thinking': '思考中', 'tool_use': '使用工具',
+            'waiting_confirmation': '等待确认', 'working': '执行中'
+        };
+        statusEl.textContent = statusText[currentTaskProgress.status] || currentTaskProgress.status;
+    }
+    if (turnsEl) {
+        turnsEl.textContent = displayTurn + ' / ' + currentTaskProgress.max_turns;
+    }
+    if (fillEl) {
+        fillEl.style.width = percent + '%';
+    }
+
+    // 更新输出日志
+    if (logEl && currentTaskProgress.output) {
+        logEl.textContent = currentTaskProgress.output;
+        logEl.scrollTop = logEl.scrollHeight;
+    }
 }
 
 function hideProgressContainer() {
-    const container = document.getElementById('taskProgressContainer');
-    container.style.display = 'none';
-    document.getElementById('progressLog').innerHTML = '';
     currentTaskProgress.taskId = null;
-}
-
-function setProgressOutput(fullOutput) {
-    // 设置完整输出内容（每次都是全量更新）
-    const logContainer = document.getElementById('progressLog');
-    if (!logContainer) {
-        console.error('progressLog element not found');
-        return;
-    }
-    logContainer.innerHTML = '';
-
-    // 按行分割，每一行作为一个 entry
-    const lines = fullOutput.split('\n');
-    lines.forEach(line => {
-        const logEntry = document.createElement('div');
-        logEntry.className = 'progress-log-entry';
-        logEntry.textContent = line;
-        logContainer.appendChild(logEntry);
-    });
-
-    // 自动滚动到底部
-    logContainer.scrollTop = logContainer.scrollHeight;
-}
-
-function addProgressLog(line) {
-    // 追加单行日志（保留用于向后兼容）
-    const logContainer = document.getElementById('progressLog');
-    if (!logContainer) {
-        console.error('progressLog element not found');
-        return;
-    }
-    const logEntry = document.createElement('div');
-    logEntry.className = 'progress-log-entry';
-    logEntry.textContent = line;
-    logContainer.appendChild(logEntry);
-
-    // Limit maximum number of log entries to prevent DOM bloat
-    const maxEntries = 200;
-    const entries = logContainer.getElementsByClassName('progress-log-entry');
-    if (entries.length > maxEntries) {
-        logContainer.removeChild(entries[0]);
-    }
-
-    // 自动滚动到底部
-    logContainer.scrollTop = logContainer.scrollHeight;
+    currentTaskProgress.output = '';
 }
 
 // ============ 用户确认 ============

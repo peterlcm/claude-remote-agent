@@ -669,6 +669,66 @@ body {
 }
 
 /* ============ 实时任务进度样式 ============ */
+.realtime-output {
+    margin-bottom: 20px;
+    padding: 16px;
+    background: #1a1a2e;
+    border-radius: 8px;
+    border: 1px solid #333;
+}
+
+.realtime-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.realtime-status {
+    font-weight: 600;
+    color: #667eea;
+    font-size: 14px;
+    animation: pulse-status 2s infinite;
+}
+
+.realtime-turns {
+    font-size: 13px;
+    color: #999;
+    font-weight: 500;
+}
+
+.realtime-progress-bar {
+    height: 6px;
+    background: #333;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.realtime-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+.realtime-log {
+    max-height: 400px;
+    overflow-y: auto;
+    background: #0d0d1a;
+    border-radius: 6px;
+    padding: 12px;
+    margin: 0;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #d4d4d4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    tab-size: 4;
+}
+
+/* 旧的进度容器样式保留但不再使用 */
 .task-progress-container {
     margin: 16px 24px;
     padding: 16px;
