@@ -1,0 +1,43 @@
+{
+  "name": "claude-remote-agent",
+  "version": "1.0.0",
+  "description": "Claude Remote Agent 客户端 — 云端长连接代理，接收并执行 Claude Code 任务",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "claude-remote-agent": "dist/main.js"
+  },
+  "files": [
+    "dist/",
+    ".env.example"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"for(const f of ['dist/main.js','dist/permission-mcp.js']){const fs=require('fs');let c=fs.readFileSync(f,'utf8');if(!c.startsWith('#!'))c='#!/usr/bin/env node\\n'+c;fs.writeFileSync(f,c)}\"",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.0",
+    "pino": "^9.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/ws": "^8.5.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "pino-pretty": "^13.0.0"
+  },
+  "keywords": [
+    "claude",
+    "remote-agent",
+    "websocket",
+    "cli"
+  ],
+  "license": "MIT"
+}
