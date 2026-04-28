@@ -98,7 +98,12 @@ class ClaudeRunner:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(current_workdir),
-                stdin=asyncio.subprocess.PIPE,
+                # Prompt is passed via "-p ..."; we never write to stdin.
+                # Leaving stdin as PIPE makes Claude CLI wait 3s before logging
+                # "Warning: no stdin data received in 3s, proceeding without it"
+                # and pointlessly delays every task. DEVNULL is exactly what
+                # the CLI suggests ("redirect stdin explicitly: < /dev/null").
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._get_env(),
