@@ -7,12 +7,21 @@ from datetime import datetime
 from typing import Dict, Set, Optional, Callable
 from fastapi import WebSocket
 
-from models import SessionLocal, ProxyClient, Task, Agent, TaskEvent
+from models import SessionLocal, ProxyClient, Task, Agent, TaskEvent, Conversation
 from protocol import (
     Message, TaskResult, TaskProgress,
     build_task_started_message, build_task_progress_message,
     build_task_completed_message, build_task_failed_message,
     build_task_cancelled_message, build_error_message
+)
+
+
+SESSION_LOST_HINTS = (
+    "session not found",
+    "no such session",
+    "conversation not found",
+    "could not find session",
+    "session does not exist",
 )
 
 
@@ -130,22 +139,26 @@ class ConnectionManager:
                 elif message.type == "task.started":
                     task_id = message.id
                     task = db.query(Task).filter(Task.id == task_id).first()
+                    conversation_id = task.conversation_id if task else None
                     if task:
                         task.status = "running"
                         task.started_at = datetime.utcnow()
                         db.commit()
-                        await self.broadcast_to_frontend({
-                            "type": "task_started",
-                            "task_id": task_id,
-                            "client_id": client_id
-                        })
+                    await self.broadcast_to_frontend({
+                        "type": "task_started",
+                        "task_id": task_id,
+                        "client_id": client_id,
+                        "conversation_id": conversation_id,
+                    })
 
                 # 任务进度（高层状态）
                 elif message.type == "task.progress":
                     task_id = message.id
+                    conversation_id = self._lookup_conversation_id(db, task_id)
                     await self.broadcast_to_frontend({
                         "type": "task_progress",
                         "task_id": task_id,
+                        "conversation_id": conversation_id,
                         "progress": message.payload
                     })
 
@@ -172,10 +185,12 @@ class ConnectionManager:
                         db.rollback()
                         print(f"⚠️ 任务事件入库失败 task={task_id} seq={seq}: {exc}")
 
+                    conversation_id = self._lookup_conversation_id(db, task_id)
                     await self.broadcast_to_frontend({
                         "type": "task_event",
                         "task_id": task_id,
                         "client_id": client_id,
+                        "conversation_id": conversation_id,
                         "seq": seq,
                         "event_type": event_type,
                         "payload": inner_payload,
@@ -186,6 +201,7 @@ class ConnectionManager:
                 elif message.type == "task.completed":
                     task_id = message.id
                     task = db.query(Task).filter(Task.id == task_id).first()
+                    conversation_id = task.conversation_id if task else None
                     if task:
                         payload = message.payload
                         task.status = "completed"
@@ -200,12 +216,26 @@ class ConnectionManager:
                         if payload.get("usage"):
                             task.set_usage(payload["usage"])
 
+                        # 更新所属对话的会话 ID 与统计
+                        if task.conversation_id:
+                            conv = db.query(Conversation).filter(
+                                Conversation.id == task.conversation_id).first()
+                            if conv:
+                                new_session_id = payload.get("session_id")
+                                if new_session_id:
+                                    conv.last_session_id = conv.claude_session_id
+                                    conv.claude_session_id = new_session_id
+                                conv.turn_count = max(conv.turn_count or 0,
+                                                      task.turn_index or 0)
+                                conv.last_prompt_at = datetime.utcnow()
+
                         db.commit()
 
                         await self.broadcast_to_frontend({
                             "type": "task_completed",
                             "task_id": task_id,
                             "client_id": client_id,
+                            "conversation_id": conversation_id,
                             "result": payload
                         })
 
@@ -215,18 +245,31 @@ class ConnectionManager:
                 elif message.type == "task.failed":
                     task_id = message.id
                     task = db.query(Task).filter(Task.id == task_id).first()
+                    conversation_id = task.conversation_id if task else None
                     if task:
+                        error_text = message.payload.get("error", "") or ""
                         task.status = "failed"
-                        task.error_message = message.payload.get("error", "")
+                        task.error_message = error_text
                         task.error_code = message.payload.get("error_code", "")
                         task.result = message.payload.get("partial_output", "")
                         task.completed_at = datetime.utcnow()
+
+                        # 识别会话丢失错误，标记 Conversation 为 lost_session
+                        if task.conversation_id:
+                            conv = db.query(Conversation).filter(
+                                Conversation.id == task.conversation_id).first()
+                            if conv and self._looks_like_session_lost(error_text):
+                                conv.status = "lost_session"
+                                conv.updated_at = datetime.utcnow()
+                                print(f"⚠️ 对话 {conv.id} 会话已丢失: {error_text[:120]}")
+
                         db.commit()
 
                         await self.broadcast_to_frontend({
                             "type": "task_failed",
                             "task_id": task_id,
                             "client_id": client_id,
+                            "conversation_id": conversation_id,
                             "error": message.payload
                         })
 
@@ -236,16 +279,18 @@ class ConnectionManager:
                 elif message.type == "task.cancelled":
                     task_id = message.id
                     task = db.query(Task).filter(Task.id == task_id).first()
+                    conversation_id = task.conversation_id if task else None
                     if task:
                         task.status = "cancelled"
                         task.completed_at = datetime.utcnow()
                         db.commit()
 
-                        await self.broadcast_to_frontend({
-                            "type": "task_cancelled",
-                            "task_id": task_id,
-                            "client_id": client_id
-                        })
+                    await self.broadcast_to_frontend({
+                        "type": "task_cancelled",
+                        "task_id": task_id,
+                        "client_id": client_id,
+                        "conversation_id": conversation_id,
+                    })
 
                 # 用户确认请求
                 elif message.type == "user_confirmation.request":
@@ -263,24 +308,28 @@ class ConnectionManager:
             print(f"❌ 处理客户端消息失败: {e}")
 
     async def send_task_to_client(self, client_id: str, task_id: str, prompt: str,
-                                   context: str = None, options: dict = None) -> bool:
+                                   context: str = None, options: dict = None,
+                                   workdir: str = None) -> bool:
         """发送任务到客户端"""
         if client_id not in self.active_connections:
             print(f"❌ 客户端不在线: {client_id}")
             return False
 
         try:
+            payload = {
+                "prompt": prompt,
+                "context": context or "",
+                "options": options or {},
+            }
+            if workdir:
+                payload["workdir"] = workdir
             message = Message(
                 type="task.execute",
                 id=task_id,
-                payload={
-                    "prompt": prompt,
-                    "context": context or "",
-                    "options": options or {}
-                }
+                payload=payload,
             )
             await self.active_connections[client_id].send_text(message.to_json())
-            print(f"📤 任务已发送到客户端: {task_id} -> {client_id}")
+            print(f"📤 任务已发送到客户端: {task_id} -> {client_id} (workdir={workdir or '.'})")
             return True
         except Exception as e:
             print(f"❌ 发送任务失败: {e}")
@@ -289,6 +338,25 @@ class ConnectionManager:
     def is_client_online(self, client_id: str) -> bool:
         """检查客户端是否在线"""
         return client_id in self.active_connections
+
+    @staticmethod
+    def _lookup_conversation_id(db, task_id: Optional[str]) -> Optional[str]:
+        """根据 task_id 查询其所属 conversation_id（事件流广播附带用）。"""
+        if not task_id:
+            return None
+        try:
+            row = db.query(Task.conversation_id).filter(Task.id == task_id).first()
+            return row[0] if row else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _looks_like_session_lost(error_text: str) -> bool:
+        """简单的关键字匹配，识别 Claude CLI 在 resume 时会话丢失的错误。"""
+        if not error_text:
+            return False
+        lower = error_text.lower()
+        return any(hint in lower for hint in SESSION_LOST_HINTS)
 
     def get_online_clients(self) -> list:
         """获取所有在线客户端ID"""

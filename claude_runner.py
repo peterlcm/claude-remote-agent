@@ -488,7 +488,9 @@ class ClaudeRunner:
         if options.session_id:
             cmd += ["--resume", options.session_id]
 
-        cmd.append("--no-session-persistence")
+        # 注意：原先这里追加 --no-session-persistence 是为了避免累积会话数据，
+        # 但它会让 --resume / --continue 失效。Conversation 模型依赖 Claude 的
+        # 本地会话存档来延续上下文，因此此处不再禁用持久化。
         return cmd
 
     def _resolve_executable(self, exe: str) -> str:

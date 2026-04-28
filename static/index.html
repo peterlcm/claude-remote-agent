@@ -36,6 +36,9 @@
             <button class="tab-btn" data-tab="agents">
                 <i class="fa fa-user-circle"></i> Agents
             </button>
+            <button class="tab-btn" data-tab="conversations">
+                <i class="fa fa-comments"></i> 对话
+            </button>
             <button class="tab-btn" data-tab="tasks">
                 <i class="fa fa-tasks"></i> 任务
             </button>
@@ -80,8 +83,8 @@
                     <div class="card">
                         <h3><i class="fa fa-bolt"></i> 快速操作</h3>
                         <div class="quick-actions">
-                            <button class="btn btn-primary" onclick="showCreateTaskModal()">
-                                <i class="fa fa-plus"></i> 新建任务
+                            <button class="btn btn-primary" onclick="showCreateConversationModal()">
+                                <i class="fa fa-plus"></i> 新建对话
                             </button>
                             <button class="btn btn-secondary" onclick="refreshAll()">
                                 <i class="fa fa-refresh"></i> 刷新数据
@@ -128,13 +131,28 @@
                 </div>
             </section>
 
-            <!-- 任务管理 -->
+            <!-- 对话管理 -->
+            <section id="conversations" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fa fa-comments"></i> 对话列表</h3>
+                        <button class="btn btn-primary btn-sm" onclick="showCreateConversationModal()">
+                            <i class="fa fa-plus"></i> 新建对话
+                        </button>
+                    </div>
+                    <div class="conversation-list" id="conversationList">
+                        <div class="empty-state">加载中...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 任务管理（只读历史） -->
             <section id="tasks" class="tab-content">
                 <div class="card">
                     <div class="card-header">
-                        <h3><i class="fa fa-tasks"></i> 任务列表</h3>
-                        <button class="btn btn-primary btn-sm" onclick="showCreateTaskModal()">
-                            <i class="fa fa-plus"></i> 新建任务
+                        <h3><i class="fa fa-tasks"></i> 任务列表 <small style="color:#888;font-weight:normal;">（历史轮次记录，请通过"对话"创建新任务）</small></h3>
+                        <button class="btn btn-primary btn-sm" onclick="showCreateConversationModal()">
+                            <i class="fa fa-plus"></i> 新建对话
                         </button>
                     </div>
                     <div class="task-list-full" id="taskList">
@@ -222,32 +240,68 @@
         </div>
     </div>
 
-    <!-- 新建任务模态框 -->
-    <div class="modal" id="createTaskModal">
+    <!-- 新建对话模态框 -->
+    <div class="modal" id="createConversationModal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>新建任务</h3>
-                <button class="close-btn" onclick="closeModal('createTaskModal')">&times;</button>
+                <h3>新建对话</h3>
+                <button class="close-btn" onclick="closeModal('createConversationModal')">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
                     <label>选择 Agent</label>
-                    <select id="taskAgent">
+                    <select id="conversationAgent">
                         <option value="">加载中...</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>任务提示词</label>
-                    <textarea id="taskPrompt" placeholder="描述你想要 Claude 完成的任务..." rows="5"></textarea>
+                    <label>工作目录（可选，默认为客户端启动目录）</label>
+                    <input type="text" id="conversationWorkdir" placeholder=".">
+                </div>
+                <div class="form-group">
+                    <label>首条提示词</label>
+                    <textarea id="conversationPrompt" placeholder="描述你想要 Claude 完成的任务..." rows="5"></textarea>
                 </div>
                 <div class="form-group">
                     <label>上下文（可选）</label>
-                    <textarea id="taskContext" placeholder="提供额外的上下文信息..." rows="3"></textarea>
+                    <textarea id="conversationContext" placeholder="提供额外的上下文信息..." rows="3"></textarea>
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('createTaskModal')">取消</button>
-                <button class="btn btn-primary" onclick="createTask()">发送任务</button>
+                <button class="btn btn-secondary" onclick="closeModal('createConversationModal')">取消</button>
+                <button class="btn btn-primary" onclick="createConversation()">开始对话</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 对话详情模态框（ChatGPT 风格） -->
+    <div class="modal" id="conversationDetailModal">
+        <div class="modal-content xlarge">
+            <div class="modal-header">
+                <h3 id="conversationDetailTitle">对话详情</h3>
+                <button class="close-btn" onclick="closeModal('conversationDetailModal')">&times;</button>
+            </div>
+            <div class="conversation-meta-bar" id="conversationMetaBar"></div>
+            <div class="modal-body conversation-body" id="conversationDetailBody">
+                <div class="empty-state">加载中...</div>
+            </div>
+            <div class="conversation-input-area" id="conversationInputArea">
+                <textarea id="conversationFollowupPrompt" rows="3" placeholder="继续追问..."></textarea>
+                <div class="conversation-input-actions">
+                    <span class="conversation-input-tip" id="conversationInputTip"></span>
+                    <button class="btn btn-primary" id="conversationSendBtn" onclick="sendConversationFollowup()">
+                        <i class="fa fa-paper-plane"></i> 发送
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-warning btn-sm" id="conversationArchiveBtn" onclick="archiveCurrentConversation()">
+                    <i class="fa fa-archive"></i> 归档
+                </button>
+                <button class="btn btn-danger btn-sm" id="conversationDeleteBtn" onclick="deleteCurrentConversation()">
+                    <i class="fa fa-trash"></i> 删除
+                </button>
+                <button class="btn btn-secondary" onclick="closeModal('conversationDetailModal')">关闭</button>
             </div>
         </div>
     </div>

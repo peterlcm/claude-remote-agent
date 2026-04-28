@@ -74,6 +74,11 @@ class TaskOptions(BaseModel):
     timeout: int = 300
     continue_last: bool = False
     session_id: Optional[str] = None
+    # 执行模式：
+    # - "oneshot"（默认）：每次任务一次性 fork claude CLI（方案 A）
+    # - "stream"：客户端为同一对话维持常驻 claude 进程，通过 stream-json 双向输入（方案 B 预留）
+    # 客户端目前只识别 oneshot；接口稳定，便于后续平滑切换。
+    mode: str = "oneshot"
 
 
 class TaskPayload(BaseModel):

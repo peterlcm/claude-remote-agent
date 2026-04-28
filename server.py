@@ -17,8 +17,9 @@ from pydantic import BaseModel
 
 from models import (
     Base, engine, SessionLocal,
-    ProxyClient, Agent, Task, TaskLog, TaskEvent,
-    create_default_client, get_or_create_default_agent
+    ProxyClient, Agent, Task, TaskLog, TaskEvent, Conversation,
+    create_default_client, get_or_create_default_agent,
+    apply_pending_migrations,
 )
 from connection_manager import ConnectionManager
 from protocol import (
@@ -37,6 +38,8 @@ if not logger.handlers:
 
 # 创建数据库表
 Base.metadata.create_all(bind=engine)
+# 给老库补齐 Conversation 相关列（SQLite 不会自动 ALTER TABLE）
+apply_pending_migrations()
 
 # 确保默认数据存在
 db = SessionLocal()
@@ -106,6 +109,27 @@ class UserConfirmationRespondRequest(BaseModel):
     request_id: str
     task_id: str
     value: str
+
+
+class ConversationCreateRequest(BaseModel):
+    """创建对话请求"""
+    agent_id: str
+    prompt: str
+    context: Optional[str] = None
+    workdir: Optional[str] = None
+    title: Optional[str] = None
+    model: Optional[str] = None
+    max_turns: Optional[int] = None
+    effort: Optional[str] = None
+
+
+class ConversationMessageRequest(BaseModel):
+    """对话内追问请求"""
+    prompt: str
+    context: Optional[str] = None
+    model: Optional[str] = None
+    max_turns: Optional[int] = None
+    effort: Optional[str] = None
 
 
 # ============ 首页路由 ============
@@ -574,6 +598,8 @@ def list_tasks(limit: int = 50, db=Depends(get_db)):
                 "id": t.id,
                 "agent_id": t.agent_id,
                 "client_id": t.client_id,
+                "conversation_id": t.conversation_id,
+                "turn_index": t.turn_index,
                 "prompt": t.prompt[:100] + "..." if len(t.prompt) > 100 else t.prompt,
                 "status": t.status,
                 "result": t.result[:100] + "..." if t.result and len(t.result) > 100 else t.result,
@@ -658,6 +684,10 @@ def get_task(task_id: str, db=Depends(get_db)):
         "data": {
             "id": task.id,
             "agent_id": task.agent_id,
+            "conversation_id": task.conversation_id,
+            "turn_index": task.turn_index,
+            "parent_session_id": task.parent_session_id,
+            "session_id": task.session_id,
             "prompt": task.prompt,
             "context": task.context,
             "status": task.status,
@@ -811,6 +841,295 @@ def get_stats(db=Depends(get_db)):
             "frontend_connections": len(manager.frontend_connections)
         }
     }
+
+
+# ============ REST API - 对话管理 ============
+def _build_task_options(agent: Agent,
+                        model: Optional[str],
+                        max_turns: Optional[int],
+                        effort: Optional[str]) -> dict:
+    """根据 Agent 默认值与显式覆盖构造发往客户端的 options dict。"""
+    final_effort = effort if effort is not None else agent.effort
+    valid_efforts = ["low", "medium", "high"]
+    options = {
+        "model": model or agent.default_model,
+        "max_turns": max_turns if max_turns is not None else agent.max_turns,
+    }
+    if final_effort and final_effort in valid_efforts:
+        options["effort"] = final_effort
+    return options
+
+
+def _summarize_title(prompt: str, max_len: int = 60) -> str:
+    """从首条 prompt 中截取标题。"""
+    text = (prompt or "").strip().replace("\n", " ")
+    return text[:max_len] + ("..." if len(text) > max_len else "")
+
+
+def _serialize_conversation(conv: Conversation, include_tasks: bool = False) -> dict:
+    """统一的 Conversation 序列化（避免 to_dict 漏字段）。"""
+    data = {
+        "id": conv.id,
+        "agent_id": conv.agent_id,
+        "client_id": conv.client_id,
+        "workdir": conv.workdir,
+        "claude_session_id": conv.claude_session_id,
+        "last_session_id": conv.last_session_id,
+        "title": conv.title,
+        "status": conv.status,
+        "turn_count": conv.turn_count,
+        "last_prompt_at": conv.last_prompt_at.isoformat() if conv.last_prompt_at else None,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+    }
+    if include_tasks:
+        data["tasks"] = [
+            {
+                "id": t.id,
+                "turn_index": t.turn_index,
+                "prompt": t.prompt,
+                "context": t.context,
+                "status": t.status,
+                "result": t.result,
+                "error_message": t.error_message,
+                "duration_ms": t.duration_ms,
+                "num_turns": t.num_turns,
+                "session_id": t.session_id,
+                "parent_session_id": t.parent_session_id,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "started_at": t.started_at.isoformat() if t.started_at else None,
+                "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+            }
+            for t in sorted(conv.tasks, key=lambda x: (x.turn_index or 0, x.created_at))
+        ]
+    return data
+
+
+@app.post("/api/conversations")
+async def create_conversation(req: ConversationCreateRequest, db=Depends(get_db)):
+    """创建一次新对话（开第一轮 Task）。"""
+    agent = db.query(Agent).filter(Agent.id == req.agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.client or not agent.client.is_online:
+        raise HTTPException(status_code=400, detail="Client is offline")
+    if not manager.is_client_online(agent.client_id):
+        raise HTTPException(status_code=400, detail="Client is offline")
+
+    workdir = (req.workdir or ".").strip() or "."
+    conv_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    conv = Conversation(
+        id=conv_id,
+        agent_id=agent.id,
+        client_id=agent.client_id,
+        workdir=workdir,
+        title=req.title or _summarize_title(req.prompt),
+        status="active",
+        turn_count=0,
+        last_prompt_at=now,
+    )
+    db.add(conv)
+
+    options = _build_task_options(agent, req.model, req.max_turns, req.effort)
+
+    task_id = str(uuid.uuid4())
+    task = Task(
+        id=task_id,
+        agent_id=agent.id,
+        client_id=agent.client_id,
+        conversation_id=conv_id,
+        turn_index=1,
+        parent_session_id=None,
+        prompt=req.prompt,
+        context=req.context or "",
+        workdir=workdir,
+        options=json.dumps(options),
+        status="pending",
+    )
+    db.add(task)
+    db.commit()
+
+    success = await manager.send_task_to_client(
+        client_id=agent.client_id,
+        task_id=task_id,
+        prompt=req.prompt,
+        context=req.context,
+        options=options,
+        workdir=workdir,
+    )
+    if success:
+        task.status = "queued"
+        db.commit()
+        # 通知前端：新对话已就绪
+        await manager.broadcast_to_frontend({
+            "type": "conversation_created",
+            "conversation_id": conv_id,
+            "task_id": task_id,
+        })
+        return {"data": {
+            "conversation_id": conv_id,
+            "task_id": task_id,
+            "status": "queued",
+        }}
+    task.status = "failed"
+    conv.status = "lost_session"
+    db.commit()
+    raise HTTPException(status_code=500, detail="Failed to send task to client")
+
+
+@app.get("/api/conversations")
+def list_conversations(agent_id: Optional[str] = None,
+                       status_filter: Optional[str] = None,
+                       limit: int = 50,
+                       db=Depends(get_db)):
+    """列出对话。"""
+    if limit <= 0 or limit > 500:
+        limit = 50
+    query = db.query(Conversation)
+    if agent_id:
+        query = query.filter(Conversation.agent_id == agent_id)
+    if status_filter:
+        query = query.filter(Conversation.status == status_filter)
+    rows = (
+        query.order_by(Conversation.last_prompt_at.desc().nullslast(),
+                       Conversation.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return {"data": [_serialize_conversation(c) for c in rows]}
+
+
+@app.get("/api/conversations/{conversation_id}")
+def get_conversation(conversation_id: str, db=Depends(get_db)):
+    """对话详情，包含所有轮次。"""
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    payload = _serialize_conversation(conv, include_tasks=True)
+    payload["client_online"] = manager.is_client_online(conv.client_id)
+    return {"data": payload}
+
+
+@app.post("/api/conversations/{conversation_id}/messages")
+async def append_conversation_message(conversation_id: str,
+                                      req: ConversationMessageRequest,
+                                      db=Depends(get_db)):
+    """在已有对话上追问，复用 Claude 的 --resume 延续上下文。"""
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.status != "active":
+        raise HTTPException(status_code=400,
+                            detail=f"Conversation is {conv.status}, cannot continue")
+    if not conv.claude_session_id:
+        raise HTTPException(status_code=400,
+                            detail="First turn has not produced a session yet, please wait")
+    if not manager.is_client_online(conv.client_id):
+        raise HTTPException(status_code=400, detail="Bound client is offline")
+
+    pending = db.query(Task).filter(
+        Task.conversation_id == conversation_id,
+        Task.status.in_(["pending", "queued", "running", "cancelling"]),
+    ).count()
+    if pending > 0:
+        raise HTTPException(status_code=409,
+                            detail="Previous turn is still running, please wait")
+
+    agent = conv.agent
+    if not agent:
+        raise HTTPException(status_code=500, detail="Conversation agent missing")
+
+    options = _build_task_options(agent, req.model, req.max_turns, req.effort)
+    options["session_id"] = conv.claude_session_id
+
+    last_turn = db.query(Task).filter(Task.conversation_id == conversation_id) \
+        .order_by(Task.turn_index.desc()).first()
+    next_turn = (last_turn.turn_index if last_turn else 0) + 1
+
+    task_id = str(uuid.uuid4())
+    task = Task(
+        id=task_id,
+        agent_id=agent.id,
+        client_id=conv.client_id,
+        conversation_id=conversation_id,
+        turn_index=next_turn,
+        parent_session_id=conv.claude_session_id,
+        prompt=req.prompt,
+        context=req.context or "",
+        workdir=conv.workdir,
+        options=json.dumps(options),
+        status="pending",
+    )
+    db.add(task)
+    conv.last_prompt_at = datetime.utcnow()
+    db.commit()
+
+    success = await manager.send_task_to_client(
+        client_id=conv.client_id,
+        task_id=task_id,
+        prompt=req.prompt,
+        context=req.context,
+        options=options,
+        workdir=conv.workdir,
+    )
+    if not success:
+        task.status = "failed"
+        db.commit()
+        raise HTTPException(status_code=500, detail="Failed to dispatch task to client")
+
+    task.status = "queued"
+    db.commit()
+    await manager.broadcast_to_frontend({
+        "type": "conversation_message_queued",
+        "conversation_id": conversation_id,
+        "task_id": task_id,
+        "turn_index": next_turn,
+    })
+    return {"data": {
+        "conversation_id": conversation_id,
+        "task_id": task_id,
+        "turn_index": next_turn,
+        "status": "queued",
+    }}
+
+
+@app.post("/api/conversations/{conversation_id}/archive")
+def archive_conversation(conversation_id: str, db=Depends(get_db)):
+    """归档对话（不再可追问）。"""
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    conv.status = "archived"
+    conv.updated_at = datetime.utcnow()
+    db.commit()
+    return {"data": {"id": conv.id, "status": conv.status}}
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str, db=Depends(get_db)):
+    """删除对话（级联删除其下 Task 与事件）。"""
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    pending = db.query(Task).filter(
+        Task.conversation_id == conversation_id,
+        Task.status.in_(["pending", "queued", "running", "cancelling"]),
+    ).count()
+    if pending > 0:
+        raise HTTPException(status_code=400,
+                            detail="Cannot delete conversation while a turn is running")
+
+    # 先把任务事件清掉，再删 Task / Conversation
+    task_ids = [t.id for t in conv.tasks]
+    if task_ids:
+        db.query(TaskEvent).filter(TaskEvent.task_id.in_(task_ids)).delete(synchronize_session=False)
+        db.query(TaskLog).filter(TaskLog.task_id.in_(task_ids)).delete(synchronize_session=False)
+
+    db.delete(conv)
+    db.commit()
+    return {"data": {"success": True, "id": conversation_id}}
 
 
 # ============ REST API - 用户确认 ============

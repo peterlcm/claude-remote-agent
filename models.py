@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean, DateTime, Text,
-    ForeignKey, Float, Index, UniqueConstraint,
+    ForeignKey, Float, Index, UniqueConstraint, inspect, text,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -81,6 +81,7 @@ class Agent(Base):
     # 关联
     client = relationship("ProxyClient", back_populates="agents")
     tasks = relationship("Task", back_populates="agent", cascade="all, delete-orphan")
+    conversations = relationship("Conversation", back_populates="agent", cascade="all, delete-orphan")
 
     def set_allowed_tools(self, tools: List[str]):
         self.allowed_tools = json.dumps(tools, ensure_ascii=False)
@@ -94,6 +95,36 @@ class Agent(Base):
         return []
 
 
+class Conversation(Base):
+    """对话：把多轮 Task 聚合成一次延续上下文的会话"""
+    __tablename__ = "conversations"
+
+    id = Column(String(64), primary_key=True, index=True)
+    agent_id = Column(String(64), ForeignKey("agents.id"), nullable=False)
+    client_id = Column(String(64), nullable=False, comment="强绑定：首次执行的客户端ID")
+    workdir = Column(String(512), default=".", comment="强绑定：首次执行的工作目录")
+    claude_session_id = Column(String(128), nullable=True, comment="Claude CLI 会话ID（每轮覆盖）")
+    title = Column(String(256), nullable=True, comment="标题（取首条 prompt 摘要）")
+    status = Column(String(32), default="active", comment="状态: active/archived/lost_session")
+    turn_count = Column(Integer, default=0, comment="已执行的轮次数")
+    last_prompt_at = Column(DateTime, nullable=True, comment="最后一次提问时间")
+    last_session_id = Column(String(128), nullable=True, comment="上一轮的 session_id（排错用）")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # 关联
+    agent = relationship("Agent", back_populates="conversations")
+    tasks = relationship("Task", back_populates="conversation",
+                         order_by="Task.turn_index",
+                         cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_conversation_agent", "agent_id"),
+        Index("ix_conversation_client", "client_id"),
+        Index("ix_conversation_status", "status"),
+    )
+
+
 class Task(Base):
     """任务"""
     __tablename__ = "tasks"
@@ -101,6 +132,11 @@ class Task(Base):
     id = Column(String(64), primary_key=True, index=True)
     agent_id = Column(String(64), ForeignKey("agents.id"), nullable=False)
     client_id = Column(String(64), nullable=True, comment="冗余：客户端ID")
+    conversation_id = Column(String(64), ForeignKey("conversations.id"), nullable=True,
+                             comment="所属对话ID，旧任务为空")
+    turn_index = Column(Integer, default=1, comment="对话内的轮次序号（1起）")
+    parent_session_id = Column(String(128), nullable=True,
+                               comment="本轮发起时使用的上一轮 session_id")
     prompt = Column(Text, nullable=False, comment="任务提示词")
     context = Column(Text, nullable=True, comment="上下文")
     workdir = Column(String(256), default=".", comment="工作目录")
@@ -126,6 +162,7 @@ class Task(Base):
 
     # 关联
     agent = relationship("Agent", back_populates="tasks")
+    conversation = relationship("Conversation", back_populates="tasks")
 
     def set_options(self, opts: dict):
         self.options = json.dumps(opts, ensure_ascii=False)
@@ -201,9 +238,31 @@ class TaskEvent(Base):
         self.payload = json.dumps(data, ensure_ascii=False)
 
 
+def _ensure_task_columns(connection) -> None:
+    """SQLite 不支持自动加列；针对老库手动补齐 Task 上的 conversation 相关列。"""
+    inspector = inspect(connection)
+    existing = {col["name"] for col in inspector.get_columns("tasks")}
+    migrations = []
+    if "conversation_id" not in existing:
+        migrations.append("ALTER TABLE tasks ADD COLUMN conversation_id VARCHAR(64)")
+    if "turn_index" not in existing:
+        migrations.append("ALTER TABLE tasks ADD COLUMN turn_index INTEGER DEFAULT 1")
+    if "parent_session_id" not in existing:
+        migrations.append("ALTER TABLE tasks ADD COLUMN parent_session_id VARCHAR(128)")
+    for sql in migrations:
+        try:
+            connection.execute(text(sql))
+            print(f"✅ DB migration: {sql}")
+        except Exception as exc:
+            print(f"⚠️ DB migration skipped ({sql}): {exc}")
+
+
 def init_db():
     """初始化数据库"""
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        if "tasks" in inspect(connection).get_table_names():
+            _ensure_task_columns(connection)
     print(f"✅ 数据库初始化完成: {DB_PATH}")
 
 
@@ -251,6 +310,14 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def apply_pending_migrations() -> None:
+    """SQLite 缺少自动加列能力，启动时主动给老库补齐字段。"""
+    with engine.begin() as connection:
+        table_names = inspect(connection).get_table_names()
+        if "tasks" in table_names:
+            _ensure_task_columns(connection)
 
 
 if __name__ == "__main__":
