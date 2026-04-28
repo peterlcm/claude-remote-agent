@@ -58,6 +58,7 @@ python test_simple_client.py   # 简单客户端连接测试
 | `protocol.py` | 所有消息类型的 Pydantic 模型 + 构建消息的辅助函数 |
 | `config.py` | 通过环境变量/.env 配置，使用 pydantic-settings |
 | `log_config.py` | 日志配置（控制台 + 文件） |
+| `permission_mcp.py` | MCP 权限服务器：被 Claude CLI 作为 `--permission-prompt-tool` 启动，通过本地 IPC 将权限请求转发给主代理进程，实现远程审批 |
 
 ### 服务端侧（管理API）
 
@@ -79,7 +80,10 @@ python test_simple_client.py   # 简单客户端连接测试
 - **Asyncio**: 全程基于 asyncio，更好地支持多任务并发
 - **自动重连**: 断开连接后客户端自动尝试重连
 - **并发控制**: `ClaudeRunnerManager` 使用信号量限制并发任务数（默认为 3）
-- **权限自动批准**: 客户端使用 `--permission-mode auto` 运行 Claude，支持无人值守操作
+- **权限审批模型**: 支持两种模式：
+  - `auto`: 自动批准所有工具调用（无人值守）
+  - `prompt`: 通过 `permission_mcp.py` MCP 服务器将权限请求转发回云端，由远程操作员审批
+- **Windows 兼容**: `permission_mcp.py` 使用后台线程读取 stdin 解决 Windows ProactorEventLoop 不支持管道的问题
 - **无会话持久化**: 使用 `--no-session-persistence` 避免累积会话数据
 
 ## 环境配置
