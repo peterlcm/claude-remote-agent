@@ -63,6 +63,9 @@ export class IpcClient {
             debugLog(`bad frame: ${err}`);
           }
         });
+        this.rl.on('error', (err) => {
+          debugLog(`readline error: ${(err as Error).message}`);
+        });
 
         // 发送 hello 帧
         const hello = { type: 'hello', token: this.token, role: 'permission_mcp' };

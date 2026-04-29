@@ -51,6 +51,10 @@ class StdioMcpServer {
         });
       });
 
+      rl.on('error', (err) => {
+        debugLog(`stdin readline error: ${(err as Error).message}`);
+      });
+
       rl.on('close', () => {
         debugLog('stdin EOF, exiting');
         resolve();

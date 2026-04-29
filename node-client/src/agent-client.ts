@@ -282,6 +282,10 @@ export class ClaudeRemoteAgent {
       }
     });
 
+    rl.on('error', (err) => {
+      logger.debug('IPC readline error: %s', (err as Error).message);
+    });
+
     rl.on('close', () => {
       const idx = this._mcpClients.indexOf(socket);
       if (idx >= 0) this._mcpClients.splice(idx, 1);
@@ -472,10 +476,23 @@ export class ClaudeRemoteAgent {
 
       const mcpConfig = this._mcpConfigPath || undefined;
 
+      // 合并配置默认值，确保 options 有有效值
+      const options = {
+        model: payload.options?.model || this.config.claude.model,
+        max_turns: payload.options?.max_turns || this.config.claude.maxTurns,
+        effort: payload.options?.effort ?? this.config.claude.effort,
+        allowed_tools: payload.options?.allowed_tools || null,
+        output_format: payload.options?.output_format || 'text',
+        timeout: payload.options?.timeout || this.config.claude.timeout,
+        continue_last: payload.options?.continue_last || false,
+        session_id: payload.options?.session_id || null,
+        mode: payload.options?.mode || 'default',
+      };
+
       const result = await this.runnerManager.runTask({
         taskId,
         prompt: payload.prompt,
-        options: payload.options,
+        options,
         context: payload.context,
         workdir: payload.workdir,
         progressCallback,

@@ -79,11 +79,19 @@ export class ClaudeRunner {
       logger.info('Executing Claude command: %s ...', cmd.slice(0, 4).join(' '));
       logger.info('Workdir: %s', currentWorkdir);
 
+      const isWindowsBatch = process.platform === 'win32' &&
+        /\.(cmd|bat|ps1)$/i.test(cmd[0]);
+
       const child = spawn(cmd[0], cmd.slice(1), {
         cwd: currentWorkdir,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: this._getEnv(),
+        shell: isWindowsBatch,
+        windowsHide: true,
       });
+
+      // Close stdin immediately to avoid Claude CLI's 3s wait warning
+      child.stdin?.end();
       this._currentProcess = child;
 
       const state: Record<string, unknown> = {
@@ -213,6 +221,9 @@ export class ClaudeRunner {
         this._dispatchEvent(event, state, options, eventCallback, progressCallback)
           .catch((err) => logger.error('dispatch error: %s', err));
       });
+      rl.on('error', (err) => {
+        logger.debug('stdout readline error: %s', (err as Error).message);
+      });
       rl.on('close', () => resolve());
     });
   }
@@ -235,6 +246,9 @@ export class ClaudeRunner {
         if (eventCallback) {
           this._safeEmit(eventCallback, 'stderr', { text });
         }
+      });
+      rl.on('error', (err) => {
+        logger.debug('stderr readline error: %s', (err as Error).message);
       });
       rl.on('close', () => resolve());
     });
@@ -430,7 +444,11 @@ export class ClaudeRunner {
 
     if (options.model) cmd.push('--model', options.model);
     if (options.max_turns) cmd.push('--max-turns', String(options.max_turns));
-    if (options.effort && ['low', 'medium', 'high'].includes(options.effort)) {
+    // 注意：Haiku 模型不支持 reasoning_effort 参数
+    const model = options.model || '';
+    const isHaiku = model.toLowerCase().includes('haiku');
+    const validEfforts = ['low', 'medium', 'high', 'max'];
+    if (!isHaiku && options.effort && validEfforts.includes(options.effort)) {
       cmd.push('--effort', options.effort);
     }
 
