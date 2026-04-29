@@ -36,7 +36,7 @@ async def main():
 
     # 测试 1.1: 基础执行功能
     runner = ClaudeRunner()
-    options = TaskOptions(model="sonnet", max_turns=3, effort="")
+    options = TaskOptions(model="sonnet", max_turns=3)
 
     print("   🔧 测试任务: 编写一个简单的 Python 程序")
     print("   ⏳ 执行中...")

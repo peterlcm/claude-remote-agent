@@ -20,7 +20,6 @@ class ClaudeConfig(BaseSettings):
     """Claude Code configuration"""
     model: str = Field(default="sonnet", validation_alias="CLAUDE_MODEL")
     max_turns: int = Field(default=10, validation_alias="CLAUDE_MAX_TURNS")
-    effort: str = Field(default="", validation_alias="CLAUDE_EFFORT")
     timeout: int = Field(default=300, validation_alias="CLAUDE_TIMEOUT")
 
     # 权限模式: default / acceptEdits / bypassPermissions / plan

@@ -362,6 +362,8 @@ export class ClaudeRunner {
         await this._emitEvent(eventCallback, 'text_delta', { index, text: delta.text || '' });
       } else if (dType === 'input_json_delta') {
         await this._emitEvent(eventCallback, 'tool_input_delta', { index, partial_json: delta.partial_json || '' });
+      } else if (dType === 'thinking_delta') {
+        await this._emitEvent(eventCallback, 'thinking_delta', { index, thinking: delta.thinking || '' });
       } else {
         await this._emitEvent(eventCallback, `delta_${dType || 'unknown'}`, { index, delta });
       }
@@ -444,13 +446,6 @@ export class ClaudeRunner {
 
     if (options.model) cmd.push('--model', options.model);
     if (options.max_turns) cmd.push('--max-turns', String(options.max_turns));
-    // 注意：Haiku 模型不支持 reasoning_effort 参数
-    const model = options.model || '';
-    const isHaiku = model.toLowerCase().includes('haiku');
-    const validEfforts = ['low', 'medium', 'high', 'max'];
-    if (!isHaiku && options.effort && validEfforts.includes(options.effort)) {
-      cmd.push('--effort', options.effort);
-    }
 
     const allowed = [...(options.allowed_tools || [])];
     if (autoApproveTools) {

@@ -265,6 +265,9 @@ const taskEventStream = {
             case 'text_delta':
                 this._appendTextDelta(state, payload.index, payload.text || '');
                 break;
+            case 'thinking_delta':
+                this._appendThinkingDelta(state, payload.index, payload.thinking || '');
+                break;
             case 'tool_input_delta':
                 this._appendToolInputDelta(state, payload.index, payload.partial_json || '');
                 break;
@@ -385,6 +388,18 @@ const taskEventStream = {
         const target = node.querySelector('.evt-text');
         if (!target) return;
         target.appendChild(document.createTextNode(text));
+    },
+
+    _appendThinkingDelta(state, index, thinking) {
+        let node = state.blocks[index];
+        if (!node) {
+            this._beginContentBlock(state, index, { type: 'thinking' });
+            node = state.blocks[index];
+        }
+        if (!node) return;
+        const target = node.querySelector('.evt-text');
+        if (!target) return;
+        target.appendChild(document.createTextNode(thinking));
     },
 
     _appendToolInputDelta(state, index, partialJson) {
@@ -643,9 +658,6 @@ function handleWebSocketMessage(message) {
             refreshStats();
             loadTasks();
             loadRecentTasks();
-            if (currentTaskProgress.taskId === message.task_id) {
-                showTaskDetail(message.task_id, { keepStream: true });
-            }
             // 对话视图：更新 turn 状态、刷新元信息条与输入框可用性
             if (taskEventStream.isActiveConversation(message.conversation_id)) {
                 const status = message.type === 'task_completed' ? 'completed'
@@ -1007,7 +1019,7 @@ async function loadAgents() {
                     <button class="btn btn-secondary btn-sm" onclick="showBindClientModal('${agent.id}', '${agent.client_id || ''}')">
                         <i class="fa fa-link"></i> ${agent.client_id ? '重新绑定' : '绑定'}
                     </button>
-                    <button class="btn btn-secondary btn-sm" onclick="showEditAgentModal('${agent.id}', '${escapeHtml(agent.name)}', '${escapeHtml(agent.description || '')}', '${agent.default_model}', ${agent.max_turns}, '${agent.effort}', '${agent.client_id || ''}')">
+                    <button class="btn btn-secondary btn-sm" onclick="showEditAgentModal('${agent.id}', '${escapeHtml(agent.name)}', '${escapeHtml(agent.description || '')}', '${agent.default_model}', ${agent.max_turns}, '${agent.client_id || ''}')">
                         <i class="fa fa-edit"></i> 编辑
                     </button>
                     <button class="btn btn-danger btn-sm" onclick="showConfirmDelete('agent', '${agent.id}', '${escapeHtml(agent.name)}')">
@@ -1017,7 +1029,7 @@ async function loadAgents() {
             </div>
             <div class="agent-meta">
                 ${agent.description || '无描述'}
-                <br>模型: ${agent.default_model} | 最大迭代: ${agent.max_turns} | 强度: ${agent.effort}
+                <br>模型: ${agent.default_model} | 最大迭代: ${agent.max_turns}
                 ${agent.client_id ? `<br>绑定客户端: ${agent.client_id}` : '<br>未绑定客户端'}
             </div>
         </div>
@@ -1051,7 +1063,6 @@ function showCreateAgentModal() {
     document.getElementById('agentDescription').value = '';
     document.getElementById('agentModel').value = 'sonnet';
     document.getElementById('agentMaxTurns').value = 10;
-    document.getElementById('agentEffort').value = 'medium';
 
     // 设置初始占位文本
     const clientSelect = document.getElementById('agentClient');
@@ -1078,7 +1089,6 @@ async function createAgent() {
         description: document.getElementById('agentDescription').value.trim(),
         default_model: document.getElementById('agentModel').value,
         max_turns: parseInt(document.getElementById('agentMaxTurns').value),
-        effort: document.getElementById('agentEffort').value,
         client_id: document.getElementById('agentClient').value || null
     };
 
@@ -1165,13 +1175,12 @@ async function bindAgentToClient() {
 // 当前编辑的 Agent ID
 let currentEditingAgentId = null;
 
-function showEditAgentModal(agentId, name, description, defaultModel, maxTurns, effort, clientId) {
+function showEditAgentModal(agentId, name, description, defaultModel, maxTurns, clientId) {
     currentEditingAgentId = agentId;
     document.getElementById('editAgentName').value = name;
     document.getElementById('editAgentDescription').value = description || '';
     document.getElementById('editAgentModel').value = defaultModel;
     document.getElementById('editAgentMaxTurns').value = maxTurns;
-    document.getElementById('editAgentEffort').value = effort || 'medium';
 
     // 设置初始占位文本
     const clientSelect = document.getElementById('editAgentClient');
@@ -1212,7 +1221,6 @@ async function updateAgent() {
         description: document.getElementById('editAgentDescription').value.trim(),
         default_model: document.getElementById('editAgentModel').value,
         max_turns: parseInt(document.getElementById('editAgentMaxTurns').value),
-        effort: document.getElementById('editAgentEffort').value,
         client_id: document.getElementById('editAgentClient').value || null
     };
 
@@ -1292,10 +1300,6 @@ async function showAgentDetail(agentId) {
             <div class="detail-row">
                 <div class="detail-label">最大迭代次数</div>
                 <div class="detail-value">${agent.max_turns}</div>
-            </div>
-            <div class="detail-row">
-                <div class="detail-label">推理强度</div>
-                <div class="detail-value">${agent.effort || '未设置'}</div>
             </div>
             <div class="detail-row">
                 <div class="detail-label">状态</div>

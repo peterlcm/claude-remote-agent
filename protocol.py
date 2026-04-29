@@ -68,7 +68,6 @@ class TaskOptions(BaseModel):
     """任务选项"""
     model: str = "sonnet"
     max_turns: int = 10
-    effort: str = ""
     allowed_tools: Optional[List[str]] = None
     output_format: str = "text"
     timeout: int = 300

@@ -480,7 +480,6 @@ export class ClaudeRemoteAgent {
       const options = {
         model: payload.options?.model || this.config.claude.model,
         max_turns: payload.options?.max_turns || this.config.claude.maxTurns,
-        effort: payload.options?.effort ?? this.config.claude.effort,
         allowed_tools: payload.options?.allowed_tools || null,
         output_format: payload.options?.output_format || 'text',
         timeout: payload.options?.timeout || this.config.claude.timeout,

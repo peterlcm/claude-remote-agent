@@ -388,6 +388,11 @@ class ClaudeRunner:
                     "index": index,
                     "partial_json": delta.get("partial_json", ""),
                 })
+            elif d_type == "thinking_delta":
+                await self._emit_event(event_callback, "thinking_delta", {
+                    "index": index,
+                    "thinking": delta.get("thinking", ""),
+                })
             else:
                 await self._emit_event(event_callback, f"delta_{d_type or 'unknown'}", {
                     "index": index,
@@ -465,8 +470,6 @@ class ClaudeRunner:
             cmd += ["--model", options.model]
         if options.max_turns:
             cmd += ["--max-turns", str(options.max_turns)]
-        if options.effort and options.effort in ("low", "medium", "high"):
-            cmd += ["--effort", options.effort]
 
         allowed = list(options.allowed_tools or [])
         if auto_approve_tools:

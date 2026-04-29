@@ -118,7 +118,6 @@ CLIENT_ID=default
 
 CLAUDE_MODEL=sonnet
 CLAUDE_MAX_TURNS=10
-CLAUDE_EFFORT=                    # 留空表示不传 reasoning_effort
 CLAUDE_TIMEOUT=300
 
 # 工具权限策略：default(逐次确认) / acceptEdits / bypassPermissions / plan
@@ -202,7 +201,6 @@ python main.py --debug
     "options": {
       "model": "sonnet",
       "max_turns": 10,
-      "effort": "",
       "allowed_tools": ["Read", "Edit", "Bash"],
       "output_format": "text",
       "timeout": 300,
@@ -235,10 +233,10 @@ python main.py --debug
 |---|---|
 | `session_init` | 会话初始化（`session_id` / `model` / `permission_mode` / `tools` / `mcp_servers` / `cwd`）|
 | `message_start` | Claude 流式响应开始 |
-| `content_block_start` | 一个内容块（text 或 tool_use）开始 |
+| `content_block_start` | 一个内容块（text 或 tool_use 或 thinking）开始 |
 | `text_delta` | 模型文本 token 增量 |
+| `thinking_delta` | 思考链增量（流式追加显示） |
 | `tool_input_delta` | 工具入参 JSON 流式片段 |
-| `delta_thinking_delta` | 思考链增量（如有）|
 | `assistant_message` | 一轮完整的助手消息（含 tool_use）|
 | `tool_result` | 工具执行结果 |
 | `api_retry` | Anthropic API 重试事件 |
@@ -387,7 +385,6 @@ claude -p "Hello" --max-turns 1
 
 - 调高 `options.timeout`
 - 调低 `options.max_turns`
-- 把 `effort` 留空或设 `low`
 
 ---
 

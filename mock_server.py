@@ -124,7 +124,7 @@ class MockCloudServer:
 
     async def send_task(self, client_id: str, prompt: str,
                         model: str = "sonnet", max_turns: int = 5,
-                        effort: str = "medium", output_format: str = "text") -> str:
+                        output_format: str = "text") -> str:
         """发送任务到客户端"""
         task_id = str(uuid.uuid4())
 
@@ -137,7 +137,6 @@ class MockCloudServer:
                 "options": {
                     "model": model,
                     "max_turns": max_turns,
-                    "effort": effort,
                     "output_format": output_format
                 }
             }

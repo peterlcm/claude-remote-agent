@@ -69,7 +69,6 @@ def test_simple_prompt():
     result = run_command([
         "claude", "-p", "用中文说一句话问候，不要超过20个字",
         "--max-turns", "1",
-        "--effort", "low"
     ], timeout=60)
 
     if result:

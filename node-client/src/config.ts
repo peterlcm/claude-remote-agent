@@ -15,7 +15,6 @@ dotenv.config();
 export interface ClaudeConfig {
   model: string;
   maxTurns: number;
-  effort: string;
   timeout: number;
   permissionMode: string;
   autoApproveTools: string[];
@@ -62,7 +61,6 @@ function buildClaudeConfig(): ClaudeConfig {
   return {
     model: getEnvStr('CLAUDE_MODEL', 'sonnet'),
     maxTurns: getEnvInt('CLAUDE_MAX_TURNS', 10),
-    effort: getEnvStr('CLAUDE_EFFORT', ''),
     timeout: getEnvInt('CLAUDE_TIMEOUT', 300),
     permissionMode: getEnvStr('CLAUDE_PERMISSION_MODE', 'default'),
     autoApproveTools: rawTools.split(',').map(t => t.trim()).filter(Boolean),

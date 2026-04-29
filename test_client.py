@@ -27,7 +27,6 @@ class TestClient:
     async def send_task(self, prompt: str,
                         model: str = "sonnet",
                         max_turns: int = 5,
-                        effort: str = "medium",
                         output_format: str = "text",
                         wait: bool = True,
                         timeout: int = 300) -> Optional[dict]:
@@ -45,7 +44,6 @@ class TestClient:
                 "options": {
                     "model": model,
                     "max_turns": max_turns,
-                    "effort": effort,
                     "output_format": output_format
                 }
             }
@@ -138,8 +136,6 @@ async def main():
                         help="模型名称 (sonnet/opus/haiku)")
     parser.add_argument("--max-turns", "-t", type=int, default=5,
                         help="最大迭代次数")
-    parser.add_argument("--effort", "-e", default="medium",
-                        help="推理深度 (low/medium/high/max)")
     parser.add_argument("--json", action="store_true",
                         help="使用JSON输出格式")
     parser.add_argument("--timeout", type=int, default=300,
@@ -171,7 +167,6 @@ async def main():
                     prompt,
                     model=args.model,
                     max_turns=3,
-                    effort="low",
                     wait=True,
                     timeout=60
                 )
@@ -183,7 +178,6 @@ async def main():
                 args.prompt,
                 model=args.model,
                 max_turns=args.max_turns,
-                effort=args.effort,
                 output_format="json" if args.json else "text",
                 timeout=args.timeout
             )

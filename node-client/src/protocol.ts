@@ -56,7 +56,6 @@ export interface UserConfirmationResponse {
 export interface TaskOptions {
   model: string;
   max_turns: number;
-  effort: string | null;
   allowed_tools: string[] | null;
   output_format: string;
   timeout: number;

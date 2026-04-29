@@ -30,7 +30,7 @@ async def test_full_flow():
     try:
         result = subprocess.run(
             ["claude", "-p", "用中文说一句问候，不超过20字",
-             "--max-turns", "1", "--effort", "low"],
+             "--max-turns", "1"],
             capture_output=True,
             text=True,
             timeout=60
@@ -105,7 +105,7 @@ async def test_full_flow():
         from protocol import TaskOptions, TaskPayload
 
         runner = ClaudeRunner()
-        options = TaskOptions(model="sonnet", max_turns=2, effort="low")
+        options = TaskOptions(model="sonnet", max_turns=2)
 
         print("🔄 执行测试任务...")
         result = await asyncio.wait_for(

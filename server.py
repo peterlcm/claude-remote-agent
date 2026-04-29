@@ -91,7 +91,6 @@ class AgentCreateRequest(BaseModel):
     description: Optional[str] = None
     default_model: str = "sonnet"
     max_turns: int = 10
-    effort: str = "medium"
 
 
 class TaskCreateRequest(BaseModel):
@@ -100,7 +99,6 @@ class TaskCreateRequest(BaseModel):
     context: Optional[str] = None
     model: Optional[str] = None
     max_turns: Optional[int] = None
-    effort: Optional[str] = None
 
 
 class UserConfirmationRespondRequest(BaseModel):
@@ -120,7 +118,6 @@ class ConversationCreateRequest(BaseModel):
     title: Optional[str] = None
     model: Optional[str] = None
     max_turns: Optional[int] = None
-    effort: Optional[str] = None
 
 
 class ConversationMessageRequest(BaseModel):
@@ -129,7 +126,6 @@ class ConversationMessageRequest(BaseModel):
     context: Optional[str] = None
     model: Optional[str] = None
     max_turns: Optional[int] = None
-    effort: Optional[str] = None
 
 
 # ============ 首页路由 ============
@@ -249,18 +245,6 @@ async def websocket_frontend(websocket: WebSocket):
             pass
     except WebSocketDisconnect:
         await manager.disconnect_frontend(websocket)
-
-
-# Validation helpers
-def validate_effort(effort: Optional[str]) -> str:
-    """Validate reasoning effort value, return default if invalid"""
-    valid_efforts = ["low", "medium", "high"]
-    # Allow empty string means "don't set effort"
-    if effort is None:
-        return ""
-    if effort in valid_efforts:
-        return effort
-    return ""
 
 
 # ============ REST API - 客户端管理 ============
@@ -409,7 +393,6 @@ def list_agents(db=Depends(get_db)):
                 "client_id": a.client_id,
                 "default_model": a.default_model,
                 "max_turns": a.max_turns,
-                "effort": a.effort,
                 "is_active": a.is_active,
                 "created_at": a.created_at.isoformat()
             }
@@ -436,7 +419,6 @@ def create_agent(req: AgentCreateRequest, db=Depends(get_db)):
         client_id=req.client_id,
         default_model=req.default_model,
         max_turns=req.max_turns,
-        effort=validate_effort(req.effort)
     )
     db.add(agent)
     db.commit()
@@ -470,7 +452,6 @@ class AgentUpdateRequest(BaseModel):
     description: Optional[str] = None
     default_model: Optional[str] = None
     max_turns: Optional[int] = None
-    effort: Optional[str] = None
     client_id: Optional[str] = None
     is_active: Optional[bool] = None
 
@@ -490,8 +471,6 @@ def update_agent(agent_id: str, req: AgentUpdateRequest, db=Depends(get_db)):
         agent.default_model = req.default_model
     if req.max_turns is not None:
         agent.max_turns = req.max_turns
-    if req.effort is not None:
-        agent.effort = validate_effort(req.effort)
     if req.client_id is not None:
         agent.client_id = req.client_id
     if req.is_active is not None:
@@ -509,7 +488,6 @@ def update_agent(agent_id: str, req: AgentUpdateRequest, db=Depends(get_db)):
             "client_id": agent.client_id,
             "default_model": agent.default_model,
             "max_turns": agent.max_turns,
-            "effort": agent.effort,
             "is_active": agent.is_active
         }
     }
@@ -565,7 +543,6 @@ def get_agent(agent_id: str, db=Depends(get_db)):
             "client_name": agent.client.name if agent.client else None,
             "default_model": agent.default_model,
             "max_turns": agent.max_turns,
-            "effort": agent.effort,
             "is_active": agent.is_active,
             "timeout": agent.timeout,
             "created_at": agent.created_at.isoformat(),
@@ -634,25 +611,18 @@ async def create_task(req: TaskCreateRequest, db=Depends(get_db)):
         options=json.dumps({
             "model": req.model or agent.default_model,
             "max_turns": req.max_turns if req.max_turns is not None else agent.max_turns,
-            "effort": req.effort if req.effort is not None else agent.effort
         }),
         status="pending"
     )
     db.add(task)
     db.commit()
-    
+
     # 发送任务到客户端
-    # 注意：只在 effort 有效时传递，避免 API 错误
-    effort_value = req.effort or agent.effort
-    valid_efforts = ["low", "medium", "high"]
-    
     options = {
         "model": req.model or agent.default_model,
         "max_turns": req.max_turns or agent.max_turns,
     }
-    if effort_value and effort_value in valid_efforts:
-        options["effort"] = effort_value
-    
+
     success = await manager.send_task_to_client(
         client_id=agent.client_id,
         task_id=task_id,
@@ -846,18 +816,12 @@ def get_stats(db=Depends(get_db)):
 # ============ REST API - 对话管理 ============
 def _build_task_options(agent: Agent,
                         model: Optional[str],
-                        max_turns: Optional[int],
-                        effort: Optional[str]) -> dict:
+                        max_turns: Optional[int]) -> dict:
     """根据 Agent 默认值与显式覆盖构造发往客户端的 options dict。"""
-    final_effort = effort if effort is not None else agent.effort
-    valid_efforts = ["low", "medium", "high"]
-    options = {
+    return {
         "model": model or agent.default_model,
         "max_turns": max_turns if max_turns is not None else agent.max_turns,
     }
-    if final_effort and final_effort in valid_efforts:
-        options["effort"] = final_effort
-    return options
 
 
 def _summarize_title(prompt: str, max_len: int = 60) -> str:
@@ -931,7 +895,7 @@ async def create_conversation(req: ConversationCreateRequest, db=Depends(get_db)
     )
     db.add(conv)
 
-    options = _build_task_options(agent, req.model, req.max_turns, req.effort)
+    options = _build_task_options(agent, req.model, req.max_turns)
 
     task_id = str(uuid.uuid4())
     task = Task(
@@ -1040,7 +1004,7 @@ async def append_conversation_message(conversation_id: str,
     if not agent:
         raise HTTPException(status_code=500, detail="Conversation agent missing")
 
-    options = _build_task_options(agent, req.model, req.max_turns, req.effort)
+    options = _build_task_options(agent, req.model, req.max_turns)
     options["session_id"] = conv.claude_session_id
 
     last_turn = db.query(Task).filter(Task.conversation_id == conversation_id) \

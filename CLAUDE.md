@@ -95,7 +95,6 @@ python test_simple_client.py   # 简单客户端连接测试
 - `CLIENT_ID`: 唯一客户端标识符
 - `CLAUDE_MODEL`: 默认模型 (sonnet/opus/haiku)
 - `CLAUDE_MAX_TURNS`: 默认最大迭代次数
-- `CLAUDE_EFFORT`: 推理深度 (low/medium/high)
 - `HEARTBEAT_INTERVAL`: 心跳间隔（秒）
 
 ## 使用本地模拟服务测试

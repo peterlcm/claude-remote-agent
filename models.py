@@ -71,7 +71,6 @@ class Agent(Base):
     client_id = Column(String(64), ForeignKey("proxy_clients.id"), nullable=True)
     default_model = Column(String(64), default="sonnet", comment="默认模型")
     max_turns = Column(Integer, default=10, comment="最大迭代次数")
-    effort = Column(String(32), default="", comment="推理强度")
     timeout = Column(Integer, default=300, comment="超时时间(秒)")
     allowed_tools = Column(Text, nullable=True, comment="允许的工具(JSON)")
     is_active = Column(Boolean, default=True, comment="是否启用")
@@ -294,7 +293,6 @@ def get_or_create_default_agent(db, client_id: str):
             client_id=client_id,
             default_model="sonnet",
             max_turns=10,
-            effort=""
         )
         db.add(default_agent)
         db.commit()
