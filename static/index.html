@@ -80,22 +80,15 @@
                 </div>
 
                 <div class="dashboard-grid">
-                    <div class="card">
-                        <h3><i class="fa fa-bolt"></i> 快速操作</h3>
-                        <div class="quick-actions">
-                            <button class="btn btn-primary" onclick="showCreateConversationModal()">
-                                <i class="fa fa-plus"></i> 新建对话
-                            </button>
-                            <button class="btn btn-secondary" onclick="refreshAll()">
-                                <i class="fa fa-refresh"></i> 刷新数据
+                    <div class="card monitor-panel">
+                        <div class="card-header">
+                            <h3><i class="fa fa-television"></i> Agent 工作监控</h3>
+                            <button class="btn btn-secondary btn-sm" onclick="loadAgentMonitor()">
+                                <i class="fa fa-refresh"></i> 刷新
                             </button>
                         </div>
-                    </div>
-
-                    <div class="card">
-                        <h3><i class="fa fa-history"></i> 最近任务</h3>
-                        <div class="task-list" id="recentTasks">
-                            <div class="empty-state">暂无任务</div>
+                        <div id="agentMonitor">
+                            <div class="empty-state">加载中...</div>
                         </div>
                     </div>
                 </div>
@@ -501,6 +494,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=4"></script>
 </body>
 </html>

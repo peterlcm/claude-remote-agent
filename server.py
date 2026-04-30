@@ -524,6 +524,67 @@ def bind_agent_to_client(agent_id: str, req: BindClientRequest, db=Depends(get_d
     }
 
 
+@app.get("/api/agents/monitor")
+def get_agents_monitor(db=Depends(get_db)):
+    """获取所有 Agent 的实时监控数据"""
+    agents = db.query(Agent).all()
+    result = []
+    for a in agents:
+        client_online = a.client_id in manager.active_connections if a.client_id else False
+        client_info = manager.client_status.get(a.client_id, {}) if a.client_id else {}
+        client_name = ""
+        if a.client_id:
+            c = db.query(ProxyClient).filter(ProxyClient.id == a.client_id).first()
+            client_name = c.name if c else a.client_id
+
+        running_tasks = db.query(Task).filter(
+            Task.agent_id == a.id,
+            Task.status == "running"
+        ).all()
+
+        # 以 Agent 维度判断状态：有 running 任务则 busy，否则 idle
+        agent_active_count = len(running_tasks)
+        agent_status = "busy" if agent_active_count > 0 else ("idle" if client_online else "offline")
+
+        result.append({
+            "agent_id": a.id,
+            "agent_name": a.name,
+            "description": a.description,
+            "client_id": a.client_id,
+            "client_name": client_name,
+            "client_online": client_online,
+            "client_status": agent_status,
+            "active_tasks": agent_active_count,
+            "default_model": a.default_model,
+            "max_turns": a.max_turns,
+            "is_active": a.is_active,
+            "running_tasks": [
+                {
+                    "task_id": t.id,
+                    "prompt": t.prompt[:80],
+                    "started_at": t.started_at.isoformat() if t.started_at else None,
+                }
+                for t in running_tasks
+            ],
+            "recent_completed_tasks": [
+                {
+                    "task_id": t.id,
+                    "prompt": t.prompt[:80],
+                    "status": t.status,
+                    "duration_ms": t.duration_ms,
+                    "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+                }
+                for t in db.query(Task).filter(
+                    Task.agent_id == a.id,
+                    Task.status.in_(["completed", "failed", "cancelled"])
+                ).order_by(Task.completed_at.desc()).limit(5).all()
+            ],
+            "last_heartbeat_at": client_info.get("last_heartbeat_at").isoformat()
+                if client_info.get("last_heartbeat_at") else None,
+        })
+    return {"data": result}
+
+
 @app.get("/api/agents/{agent_id}")
 def get_agent(agent_id: str, db=Depends(get_db)):
     """获取 Agent 详情"""
@@ -811,6 +872,7 @@ def get_stats(db=Depends(get_db)):
             "frontend_connections": len(manager.frontend_connections)
         }
     }
+
 
 
 # ============ REST API - 对话管理 ============

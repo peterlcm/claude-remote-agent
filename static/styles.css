@@ -267,6 +267,254 @@ body {
     gap: 12px;
 }
 
+/* ---- Agent 工作监控面板 ---- */
+.monitor-panel {
+    grid-column: 1 / -1;
+}
+
+.monitor-panel .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.monitor-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+}
+
+.monitor-agent-card {
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #e9ecef;
+    overflow: hidden;
+    transition: box-shadow 0.2s, transform 0.15s;
+}
+
+.monitor-agent-card:hover {
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    transform: translateY(-1px);
+}
+
+.monitor-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 16px 16px 0;
+}
+
+.monitor-agent-name {
+    font-weight: 600;
+    font-size: 16px;
+    color: #1a1a2e;
+    line-height: 1.3;
+}
+
+.monitor-agent-name .agent-id {
+    font-weight: 400;
+    font-size: 11px;
+    color: #aaa;
+    margin-left: 6px;
+}
+
+.monitor-card-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+
+.monitor-card-status.idle {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.monitor-card-status.busy {
+    background: #e8eaf6;
+    color: #3949ab;
+}
+
+.monitor-card-status.offline {
+    background: #f5f5f5;
+    color: #999;
+}
+
+.monitor-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.monitor-status-dot.idle { background: #28a745; }
+.monitor-status-dot.busy {
+    background: #667eea;
+    animation: pulse-dot 1.5s infinite;
+}
+.monitor-status-dot.offline { background: #ccc; }
+
+@keyframes pulse-dot {
+    0% { box-shadow: 0 0 0 0 rgba(102,126,234,0.6); }
+    70% { box-shadow: 0 0 0 6px rgba(102,126,234,0); }
+    100% { box-shadow: 0 0 0 0 rgba(102,126,234,0); }
+}
+
+.monitor-card-body {
+    padding: 12px 16px 16px;
+}
+
+.monitor-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.monitor-meta-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #f8f9fa;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #555;
+}
+
+.monitor-meta-tag i {
+    font-size: 11px;
+    color: #999;
+}
+
+.monitor-meta-tag.text-muted {
+    color: #bbb;
+}
+
+.monitor-card-footer {
+    border-top: 1px solid #f0f0f0;
+    padding: 10px 16px;
+    background: #fafbfc;
+}
+
+.monitor-running-tasks {
+    /* no extra margin needed inside card footer */
+}
+
+.running-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #667eea;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.running-task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.running-task-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: white;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+    border: 1px solid #eee;
+}
+
+.running-task-item:hover {
+    background: #f0f2ff;
+    border-color: #667eea;
+}
+
+.running-task-name {
+    color: #333;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 10px;
+}
+
+.running-task-time {
+    color: #999;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.monitor-footer-divider {
+    height: 1px;
+    background: #eee;
+    margin: 8px 0;
+}
+
+.completed-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #28a745;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.completed-task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.completed-task-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: white;
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+    border: 1px solid #eee;
+}
+
+.completed-task-item:hover {
+    background: #f0fff0;
+    border-color: #28a745;
+}
+
+.completed-task-icon {
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.completed-task-icon .green { color: #28a745; }
+.completed-task-icon .red { color: #dc3545; }
+.completed-task-icon .gray { color: #999; }
+
+.completed-task-name {
+    color: #555;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.completed-task-info {
+    color: #aaa;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
 .empty-state {
     text-align: center;
     padding: 40px;

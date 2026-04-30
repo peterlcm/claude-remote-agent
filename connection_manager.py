@@ -35,10 +35,18 @@ class ConnectionManager:
         self.frontend_connections: Set[WebSocket] = set()
         # 任务回调: task_id -> callback
         self.task_callbacks: Dict[str, Callable] = {}
+        # 客户端实时状态: client_id -> {"status": "idle"/"busy", "active_tasks": int, "last_heartbeat_at": datetime}
+        self.client_status: Dict[str, dict] = {}
 
     async def connect_client(self, client_id: str, websocket: WebSocket):
         """客户端连接"""
         self.active_connections[client_id] = websocket
+        # 初始化实时状态
+        self.client_status[client_id] = {
+            "status": "idle",
+            "active_tasks": 0,
+            "last_heartbeat_at": datetime.utcnow(),
+        }
 
         # 更新数据库状态
         db = SessionLocal()
@@ -63,6 +71,8 @@ class ConnectionManager:
         """客户端断开连接"""
         if client_id in self.active_connections:
             del self.active_connections[client_id]
+        # 清理实时状态
+        self.client_status.pop(client_id, None)
 
         # 更新数据库状态
         db = SessionLocal()
@@ -130,6 +140,28 @@ class ConnectionManager:
                     if client:
                         client.last_heartbeat_at = datetime.utcnow()
                         db.commit()
+
+                    # 更新实时状态，检测变化后广播
+                    payload = message.payload or {}
+                    new_status = payload.get("status", "idle")
+                    new_active = payload.get("active_tasks", 0)
+                    old = self.client_status.get(client_id, {})
+                    status_changed = (
+                        old.get("status") != new_status
+                        or old.get("active_tasks") != new_active
+                    )
+                    self.client_status[client_id] = {
+                        "status": new_status,
+                        "active_tasks": new_active,
+                        "last_heartbeat_at": datetime.utcnow(),
+                    }
+                    if status_changed:
+                        await self.broadcast_to_frontend({
+                            "type": "client_status_changed",
+                            "client_id": client_id,
+                            "status": new_status,
+                            "active_tasks": new_active,
+                        })
 
                 # 注册确认
                 elif message.type == "agent.register_ack":

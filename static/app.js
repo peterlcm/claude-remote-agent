@@ -632,15 +632,19 @@ function handleWebSocketMessage(message) {
         case 'client_disconnected':
             refreshStats();
             loadClients();
+            loadAgentMonitor();
             // 客户端在线状态变化会影响对话页的"发送"按钮可用性
             if (currentConversation && currentConversation.id) {
                 refreshConversationDetail(currentConversation.id);
             }
             break;
+        case 'client_status_changed':
+            loadAgentMonitor();
+            break;
         case 'task_started':
             refreshStats();
             loadTasks();
-            loadRecentTasks();
+            loadAgentMonitor();
             // 对话视图下，更新对应 turn 的状态
             if (taskEventStream.isActiveConversation(message.conversation_id)) {
                 markTurnStatus(message.task_id, 'running');
@@ -657,7 +661,7 @@ function handleWebSocketMessage(message) {
         case 'task_cancelled':
             refreshStats();
             loadTasks();
-            loadRecentTasks();
+            loadAgentMonitor();
             // 对话视图：更新 turn 状态、刷新元信息条与输入框可用性
             if (taskEventStream.isActiveConversation(message.conversation_id)) {
                 const status = message.type === 'task_completed' ? 'completed'
@@ -736,7 +740,7 @@ function refreshAll() {
     loadAgents();
     loadConversations();
     loadTasks();
-    loadRecentTasks();
+    loadAgentMonitor();
 }
 
 // Statistics
@@ -1373,8 +1377,104 @@ async function loadTasks() {
     }).join('');
 }
 
+// Agent 工作监控面板
+async function loadAgentMonitor() {
+    const container = document.getElementById('agentMonitor');
+    if (!container) return;
+
+    const data = await apiGet('/api/agents/monitor');
+    if (!data || !data.data || data.data.length === 0) {
+        container.innerHTML = '<div class="empty-state">暂无 Agent，请先创建 Agent 并绑定客户端</div>';
+        return;
+    }
+
+    container.innerHTML = '<div class="monitor-grid">' + data.data.map(agent => {
+        const statusClass = agent.client_status === 'busy' ? 'busy'
+            : agent.client_online ? 'idle' : 'offline';
+        const statusText = agent.client_status === 'busy' ? '忙碌'
+            : agent.client_online ? '空闲' : '离线';
+
+        let footerHtml = '';
+        const hasRunning = agent.running_tasks && agent.running_tasks.length > 0;
+        const hasCompleted = agent.recent_completed_tasks && agent.recent_completed_tasks.length > 0;
+        if (hasRunning || hasCompleted) {
+            let runningHtml = '';
+            if (hasRunning) {
+                runningHtml = `
+                    <span class="running-label"><i class="fa fa-play-circle"></i> 运行中 (${agent.running_tasks.length})</span>
+                    <div class="running-task-list">
+                        ${agent.running_tasks.map(t => `
+                            <div class="running-task-item" onclick="showTaskDetail('${t.task_id}')">
+                                <span class="running-task-name">${escapeHtml(t.prompt)}${t.prompt.length > 80 ? '...' : ''}</span>
+                                ${t.started_at ? `<span class="running-task-time">${new Date(t.started_at).toLocaleTimeString()}</span>` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+            let completedHtml = '';
+            if (hasCompleted) {
+                completedHtml = `
+                    <span class="completed-label"><i class="fa fa-check-circle"></i> 最近完成 (${agent.recent_completed_tasks.length})</span>
+                    <div class="completed-task-list">
+                        ${agent.recent_completed_tasks.map(t => {
+                            const statusIcon = t.status === 'completed' ? 'fa-check-circle green' : t.status === 'failed' ? 'fa-times-circle red' : 'fa-ban gray';
+                            const duration = t.duration_ms ? (t.duration_ms >= 60000 ? Math.round(t.duration_ms/60000) + '分' : Math.round(t.duration_ms/1000) + '秒') : '';
+                            return `
+                                <div class="completed-task-item" onclick="showTaskDetail('${t.task_id}')">
+                                    <span class="completed-task-icon"><i class="fa ${statusIcon}"></i></span>
+                                    <span class="completed-task-name">${escapeHtml(t.prompt)}${t.prompt.length > 80 ? '...' : ''}</span>
+                                    <span class="completed-task-info">${duration}${t.completed_at ? ' ' + new Date(t.completed_at).toLocaleTimeString() : ''}</span>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `;
+            }
+            footerHtml = `
+                <div class="monitor-card-footer">
+                    ${runningHtml}
+                    ${hasRunning && hasCompleted ? '<div class="monitor-footer-divider"></div>' : ''}
+                    ${completedHtml}
+                </div>
+            `;
+        }
+
+        return `
+            <div class="monitor-agent-card">
+                <div class="monitor-card-header">
+                    <span class="monitor-agent-name">
+                        ${escapeHtml(agent.agent_name)}
+                        <span class="agent-id">(${agent.agent_id})</span>
+                    </span>
+                    <span class="monitor-card-status ${statusClass}">
+                        <span class="monitor-status-dot ${statusClass}"></span>
+                        ${statusText}
+                    </span>
+                </div>
+                <div class="monitor-card-body">
+                    <div class="monitor-card-meta">
+                        <span class="monitor-meta-tag"><i class="fa fa-microchip"></i> ${agent.default_model}</span>
+                        <span class="monitor-meta-tag"><i class="fa fa-repeat"></i> ${agent.max_turns} 轮</span>
+                        ${agent.client_name
+                            ? `<span class="monitor-meta-tag"><i class="fa fa-desktop"></i> ${escapeHtml(agent.client_name)}</span>`
+                            : '<span class="monitor-meta-tag text-muted"><i class="fa fa-unlink"></i> 未绑定</span>'
+                        }
+                        ${agent.client_online
+                            ? `<span class="monitor-meta-tag"><i class="fa fa-tasks"></i> ${agent.active_tasks} 任务</span>`
+                            : ''
+                        }
+                    </div>
+                </div>
+                ${footerHtml}
+            </div>
+        `;
+    }).join('') + '</div>';
+}
+
 async function loadRecentTasks() {
     const container = document.getElementById('recentTasks');
+    if (!container) return;
     const data = await apiGet('/api/tasks?limit=5');
     
     if (!data || !data.data || data.data.length === 0) {
